@@ -928,6 +928,21 @@ static const struct ts_dmi_data techbite_arc_11_6_data = {
 	.properties	= techbite_arc_11_6_props,
 };
 
+static const struct property_entry teclast_tbook10_props[] = {
+	PROPERTY_ENTRY_U32("touchscreen-min-x", 10),
+	PROPERTY_ENTRY_U32("touchscreen-min-y", 10),
+	PROPERTY_ENTRY_U32("touchscreen-size-x", 1970),
+	PROPERTY_ENTRY_U32("touchscreen-size-y", 1520),
+	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
+	PROPERTY_ENTRY_STRING("firmware-name", "gsl3692-teclast-tbook10.fw"),
+	{ }
+};
+
+static const struct ts_dmi_data teclast_tbook10_data = {
+	.acpi_name	= "MSSL1680:00",
+	.properties	= teclast_tbook10_props,
+};
+
 static const struct property_entry teclast_tbook11_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-min-x", 8),
 	PROPERTY_ENTRY_U32("touchscreen-min-y", 14),
@@ -1683,6 +1698,14 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "mPTech"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "techBite Arc 11.6"),
 			DMI_MATCH(DMI_BOARD_NAME, "G8316_272B"),
+		},
+	},
+	{
+		/* Teclast TbooK 10 */
+		.driver_data = (void *)&teclast_tbook10_data,
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "TECLAST"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "TbooK 10"),
 		},
 	},
 	{
