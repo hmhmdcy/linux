@@ -901,6 +901,21 @@ config SERIAL_JSM
 	  To compile this driver as a module, choose M here: the
 	  module will be called jsm.
 
+config SERIAL_EUD_EARLYCON
+	bool "Qualcomm EUD COM early console"
+	depends on ARCH_QCOM || COMPILE_TEST
+	select SERIAL_EARLYCON
+	help
+	  Say Y here to use the Qualcomm Embedded USB Debugger (EUD) COM
+	  peripheral as an early console.  EUD takes over the USB port and
+	  exposes a transmit-only FIFO to a host PC, which makes it the only
+	  way to see kernel output early when neither a display nor a real
+	  UART is available.
+
+	  Select it on the kernel command line with:
+
+	      earlycon=eud,mmio,0x88e0000
+
 config SERIAL_MSM
 	tristate "MSM on-chip serial port support"
 	depends on ARCH_QCOM || COMPILE_TEST
