@@ -79,20 +79,33 @@ static void eud_write(struct console *con, const char *s, unsigned int n)
 
 static int __init eud_setup(struct earlycon_device *device, const char *opt)
 {
-	void __iomem *base = device->port.membase;
+	void __iomem *csr;
 
-	if (!base)
+	if (!device->port.membase)
 		return -ENODEV;
 
 	/*
 	 * Enable the EUD block if an earlier boot stage did not.  The EDK2 port
-	 * of this device enables it in BDS, but the Android boot chain does not
-	 * touch it at all.  The interrupt mask is deliberately left alone:
-	 * arming interrupt sources before the interrupt controller and a driver
-	 * exist would only risk a spurious interrupt later.
+	 * of this device enables it in BDS, the Android boot chain does not
+	 * touch it at all.
+	 *
+	 * CSR_EUD_EN sits one 4 KiB page above the COM FIFO, outside the window
+	 * the earlycon framework maps for us - it maps 64 bytes, which is the
+	 * page the FIFO lives in - so it needs a mapping of its own.  Writing
+	 * through the framebuffer pointer would take a data abort here and kill
+	 * the boot before any output.
 	 */
-	writel_relaxed(1, base + EUD_REG_CSR_EUD_EN);
+	csr = ioremap(device->port.mapbase + EUD_REG_CSR_EUD_EN, sizeof(u32));
+	if (csr) {
+		writel_relaxed(1, csr);
+		/* deliberately leaked: this console lives for the whole boot */
+	}
 
+	/*
+	 * The interrupt mask is deliberately left alone: arming interrupt
+	 * sources before the interrupt controller and a driver exist would only
+	 * risk a spurious interrupt later.
+	 */
 	device->con->write = eud_write;
 	return 0;
 }
