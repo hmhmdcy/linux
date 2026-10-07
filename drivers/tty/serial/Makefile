@@ -10,6 +10,7 @@ obj-$(CONFIG_SERIAL_EARLYCON) += earlycon.o
 obj-$(CONFIG_SERIAL_EARLYCON_SEMIHOST) += earlycon-semihost.o
 obj-$(CONFIG_SERIAL_EARLYCON_RISCV_SBI) += earlycon-riscv-sbi.o
 obj-$(CONFIG_SERIAL_EUD_EARLYCON) += eud_earlycon.o
+obj-$(CONFIG_SERIAL_EUD_CONSOLE) += eud.o
 
 # These Sparc drivers have to appear before others such as 8250
 # which share ttySx minor node space.  Otherwise console device

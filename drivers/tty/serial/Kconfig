@@ -1607,6 +1607,19 @@ config SERIAL_NUVOTON_MA35D1_CONSOLE
 	  but you can alter that using a kernel command line option such as
 	  "console=ttyNVTx".
 
+
+config SERIAL_EUD_CONSOLE
+        bool "Qualcomm EUD COM console"
+        depends on ARCH_QCOM || COMPILE_TEST
+        help
+          Register the Qualcomm Embedded USB Debugger (EUD) COM peripheral as
+          a real console.  Unlike the early console it stays registered, so
+          the log channel can be selected with console=eud and keep_bootcon is
+          no longer needed.
+
+          The early console is still useful: it covers the part of the boot
+          that happens before platform devices are probed.
+
 endmenu
 
 config SERIAL_MCTRL_GPIO

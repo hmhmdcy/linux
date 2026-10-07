@@ -47,7 +47,7 @@
 		 * have the COM port open before the kernel starts.
 		 */
 		/delete-property/ stdout-path;
-		bootargs = "earlycon=eud,mmio,0x88e0000 console=tty0 loglevel=7 ignore_loglevel panic=15 clk_ignore_unused pd_ignore_unused regulator_ignore_unused";
+		bootargs = "earlycon=eud,mmio,0x88e0000 console=tty0 console=eud loglevel=7 ignore_loglevel panic=15 clk_ignore_unused pd_ignore_unused regulator_ignore_unused";
 	};
 
 	/*
@@ -291,3 +291,17 @@
  * there is nothing to change here.  USB gadget mode and the DWC3 SMMU stream
  * (apps_smmu 0x140) are already described by sm8150-mtp.dts / sm8150.dtsi.
  */
+
+/*
+ * EUD COM console.  The full EUD block has no usable binding here: the in-tree
+ * qcom,eud driver wants a USB role switch and SCM access to enable secure EUD,
+ * and this handset has neither.  All the console needs is the register window
+ * of the COM FIFO, which the EDK2 port already leaves enabled.
+ */
+&soc {
+        eud_com: serial@88e0000 {
+                compatible = "qcom,sm8150-eud-com";
+                reg = <0 0x88e0000 0 0x2000>;
+                status = "okay";
+        };
+};
