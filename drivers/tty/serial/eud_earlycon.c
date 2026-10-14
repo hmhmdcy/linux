@@ -20,10 +20,13 @@
  */
 
 #include <linux/console.h>
+#include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/minmax.h>
 #include <linux/serial_core.h>
+
+#include <asm/early_ioremap.h>
 
 #define EUD_REG_CSR_EUD_EN    0x1014 /* BIT(0) enables the EUD block */
 #define EUD_REG_INT_STATUS_1  0x0044 /* BIT(1) is the TX flow control bit */
@@ -35,16 +38,39 @@
 #define EUD_INT_TX            BIT(1)
 
 /*
- * The TX FIFO is shallower than a dozen bytes and truncates a longer burst,
- * so keep the chunk size that is proven on this hardware.
+ * One register write is one FIFO entry (ID, LEN, one per data byte), and the
+ * TX FIFO is only about seven entries deep.  Six data bytes made the frame
+ * eight entries, so the tail was truncated and every following frame was
+ * misaligned; four data bytes keep the frame at six entries.  Frames are only
+ * started when the FIFO reports room; nothing is written mid-frame.
  */
-#define EUD_COM_CHUNK         6u
+#define EUD_COM_CHUNK        4u
 
 /*
  * Bounded poll: the timer is not calibrated this early, so there is nothing to
  * sleep with, and a wrong status readback must never hang the boot.
  */
 #define EUD_TX_POLL_LIMIT     200000u
+
+/*
+ * The status bit cannot be trusted on this unit: INT_STATUS_1 BIT(1) reads
+ * back stuck-at-set, so eud_wait_tx() returns at once and the FIFO is written
+ * at MMIO speed.  It is only about seven entries deep, so whole frames are
+ * dropped - measured on hardware 2026-10-08, the firmware's paced frames
+ * arrived intact while the kernel's lost every few frames, which shows up as
+ * four bytes missing from the middle of a log line.
+ *
+ * Pace by time instead, with the numbers the EDK2 port measured on the same
+ * FIFO: 200 us per register write, 2 ms per frame, 1.2 KB/s, zero overflow.
+ */
+#define EUD_TX_BYTE_US               200
+#define EUD_TX_FRAME_US              2000
+
+static inline void eud_put(void __iomem *base, unsigned int off, unsigned int v)
+{
+        udelay(EUD_TX_BYTE_US);
+        writel_relaxed(v, base + off);
+}
 
 static void eud_wait_tx(void __iomem *base)
 {
@@ -64,16 +90,16 @@ static void eud_write(struct console *con, const char *s, unsigned int n)
 	unsigned int i;
 
 	while (n) {
-		unsigned int chunk = min(n, EUD_COM_CHUNK);
+	        unsigned int chunk = min(n, EUD_COM_CHUNK);
 
-		writel_relaxed(EUD_COM_UART_ID, base + EUD_REG_COM_TX_ID);
-		writel_relaxed(chunk, base + EUD_REG_COM_TX_LEN);
-		for (i = 0; i < chunk; i++)
-			writel_relaxed(s[i], base + EUD_REG_COM_TX_DAT);
+	        eud_put(base, EUD_REG_COM_TX_ID, EUD_COM_UART_ID);
+	        eud_put(base, EUD_REG_COM_TX_LEN, chunk);
+	        for (i = 0; i < chunk; i++)
+	                eud_put(base, EUD_REG_COM_TX_DAT, s[i]);
 
-		s += chunk;
-		n -= chunk;
-		eud_wait_tx(base);
+	        s += chunk;
+	        n -= chunk;
+	        udelay(EUD_TX_FRAME_US);
 	}
 }
 
@@ -95,10 +121,13 @@ static int __init eud_setup(struct earlycon_device *device, const char *opt)
 	 * through the framebuffer pointer would take a data abort here and kill
 	 * the boot before any output.
 	 */
-	csr = ioremap(device->port.mapbase + EUD_REG_CSR_EUD_EN, sizeof(u32));
+	/* setup_earlycon() runs before slab and ordinary ioremap are ready. */
+	csr = early_ioremap(device->port.mapbase + EUD_REG_CSR_EUD_EN, sizeof(u32));
 	if (csr) {
 		writel_relaxed(1, csr);
-		/* deliberately leaked: this console lives for the whole boot */
+		/* Complete the one-shot enable before releasing the temporary mapping. */
+		readl_relaxed(csr);
+		early_iounmap(csr, sizeof(u32));
 	}
 
 	/*
