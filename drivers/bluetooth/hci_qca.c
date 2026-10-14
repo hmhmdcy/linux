@@ -82,6 +82,18 @@ enum qca_flags {
 	QCA_DEBUGFS_CREATED,
 };
 
+/* Observation only: parsing, pulse timing and retry behavior are unchanged. */
+enum qca_rx_phase {
+	QCA_RX_UNSPECIFIED,
+	QCA_RX_POWER_OFF_PULSE,
+	QCA_RX_POWER_ON_PULSE,
+	QCA_RX_PORT_REOPEN,
+	QCA_RX_READ_VERSION,
+	QCA_RX_BAUDRATE_CHANGE,
+	QCA_RX_FIRMWARE_SETUP,
+	QCA_RX_READY,
+};
+
 enum qca_capabilities {
 	QCA_CAP_WIDEBAND_SPEECH = BIT(0),
 	QCA_CAP_VALID_LE_STATES = BIT(1),
@@ -140,6 +152,8 @@ struct qca_dump_size {
 struct qca_data {
 	struct hci_uart *hu;
 	struct sk_buff *rx_skb;
+	u32 rx_phase;
+	u32 requested_baudrate;
 	struct sk_buff_head txq;
 	struct sk_buff_head tx_wait_q;	/* HCI_IBS wait queue	*/
 	struct sk_buff_head rx_memdump_q;	/* Memdump wait queue	*/
@@ -1280,6 +1294,7 @@ static const struct h4_recv_pkt qca_recv_pkts[] = {
 static int qca_recv(struct hci_uart *hu, const void *data, int count)
 {
 	struct qca_data *qca = hu->priv;
+	unsigned int partial = qca->rx_skb ? qca->rx_skb->len : 0;
 
 	if (!test_bit(HCI_UART_REGISTERED, &hu->flags))
 		return -EUNATCH;
@@ -1288,7 +1303,11 @@ static int qca_recv(struct hci_uart *hu, const void *data, int count)
 				  qca_recv_pkts, ARRAY_SIZE(qca_recv_pkts));
 	if (IS_ERR(qca->rx_skb)) {
 		int err = PTR_ERR(qca->rx_skb);
-		bt_dev_err(hu->hdev, "Frame reassembly failed (%d)", err);
+		bt_dev_err(hu->hdev,
+			   "Frame reassembly failed (%d) phase=%u baud=%u chunk=%d partial=%u first=%02x",
+			   err, READ_ONCE(qca->rx_phase),
+			   READ_ONCE(qca->requested_baudrate), count, partial,
+			   count > 0 ? ((const u8 *)data)[0] : 0);
 		qca->rx_skb = NULL;
 		return err;
 	}
@@ -1395,6 +1414,9 @@ static int qca_set_baudrate(struct hci_dev *hdev, uint8_t baudrate)
 
 static inline void host_set_baudrate(struct hci_uart *hu, unsigned int speed)
 {
+	struct qca_data *qca = hu->priv;
+
+	WRITE_ONCE(qca->requested_baudrate, speed);
 	if (hu->serdev)
 		serdev_device_set_baudrate(hu->serdev, speed);
 	else
@@ -1417,6 +1439,8 @@ static int qca_send_power_pulse(struct hci_uart *hu, bool on)
 	 * save power. Disabling hardware flow control is mandatory while
 	 * sending power pulses to SoC.
 	 */
+	WRITE_ONCE(((struct qca_data *)hu->priv)->rx_phase,
+		   on ? QCA_RX_POWER_ON_PULSE : QCA_RX_POWER_OFF_PULSE);
 	bt_dev_dbg(hu->hdev, "sending power pulse %02x to controller", cmd);
 
 	serdev_device_write_flush(hu->serdev);
@@ -1530,6 +1554,7 @@ static int qca_set_speed(struct hci_uart *hu, enum qca_speed_type speed_type)
 			break;
 		}
 
+		WRITE_ONCE(qca->rx_phase, QCA_RX_BAUDRATE_CHANGE);
 		qca_baudrate = qca_get_baudrate_value(speed);
 		bt_dev_dbg(hu->hdev, "Set UART speed to %d", speed);
 		ret = qca_set_baudrate(hu->hdev, qca_baudrate);
@@ -1837,6 +1862,7 @@ static int qca_regulator_init(struct hci_uart *hu)
 		break;
 	}
 
+	WRITE_ONCE(((struct qca_data *)hu->priv)->rx_phase, QCA_RX_PORT_REOPEN);
 	return qca_port_reopen(hu);
 }
 
@@ -1991,6 +2017,7 @@ retry:
 
 		hci_set_aosp_capable(hdev);
 
+		WRITE_ONCE(qca->rx_phase, QCA_RX_READ_VERSION);
 		ret = qca_read_soc_version(hdev, &ver, soc_type);
 		if (ret)
 			goto out;
@@ -2023,11 +2050,13 @@ retry:
 
 	default:
 		/* Get QCA version information */
+		WRITE_ONCE(qca->rx_phase, QCA_RX_READ_VERSION);
 		ret = qca_read_soc_version(hdev, &ver, soc_type);
 		if (ret)
 			goto out;
 	}
 
+	WRITE_ONCE(qca->rx_phase, QCA_RX_FIRMWARE_SETUP);
 	/* Setup patch / NVM configurations */
 	ret = qca_uart_setup(hdev, qca_baudrate, soc_type, ver,
 			firmware_name, rampatch_name);
@@ -2085,6 +2114,7 @@ out:
 	qca->fw_version = le16_to_cpu(ver.patch_ver);
 	qca->controller_id = le16_to_cpu(ver.rom_ver);
 	hci_devcd_register(hdev, hci_coredump_qca, qca_dmp_hdr, NULL);
+	WRITE_ONCE(qca->rx_phase, QCA_RX_READY);
 
 	return ret;
 }

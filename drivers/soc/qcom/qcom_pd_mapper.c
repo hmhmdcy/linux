@@ -15,6 +15,9 @@
 
 #include "pdr_internal.h"
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/samurai_diag.h>
+
 #define SERVREG_QMI_VERSION 0x101
 #define SERVREG_QMI_INSTANCE 0
 
@@ -207,7 +210,10 @@ static void qcom_pdm_get_domain_list(struct qmi_handle *qmi,
 		pr_err("Error sending servreg response: %d\n", ret);
 
 	mutex_unlock(&qcom_pdm_mutex);
-
+	if (of_machine_is_compatible("realme,samurai"))
+		trace_samurai_pdm_response(sq->sq_node, sq->sq_port,
+			req->service_name, offset, rsp->total_domains,
+			rsp->domain_list_len, ret);
 	kfree(rsp);
 }
 
@@ -571,6 +577,8 @@ static const struct qcom_pdm_domain_data *sm8150_domains[] = {
 	&adsp_audio_pd,
 	&adsp_root_pd,
 	&cdsp_root_pd,
+	&slpi_root_pd,
+	&slpi_sensor_pd,
 	&mpss_root_pd_gps,
 	&mpss_wlan_pd,
 	NULL,

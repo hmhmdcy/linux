@@ -7,6 +7,8 @@
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/rpmsg.h>
+#include <linux/of.h>
+#include <trace/events/samurai_diag.h>
 
 #include "qrtr.h"
 
@@ -23,8 +25,12 @@ static int qcom_smd_qrtr_callback(struct rpmsg_device *rpdev,
 	struct qrtr_smd_dev *qdev = dev_get_drvdata(&rpdev->dev);
 	int rc;
 
-	if (!qdev)
+	if (!qdev || !READ_ONCE(qdev->ep.node)) {
+		if (of_machine_is_compatible("realme,samurai"))
+			trace_samurai_qrtr_rx_drop(len, !!qdev,
+				qdev && !!READ_ONCE(qdev->ep.node));
 		return -EAGAIN;
+	}
 
 	rc = qrtr_endpoint_post(&qdev->ep, data, len);
 	if (rc == -EINVAL) {
@@ -69,11 +75,13 @@ static int qcom_smd_qrtr_probe(struct rpmsg_device *rpdev)
 	qdev->dev = &rpdev->dev;
 	qdev->ep.xmit = qcom_smd_qrtr_send;
 
-	rc = qrtr_endpoint_register(&qdev->ep, QRTR_EP_NID_AUTO);
-	if (rc)
-		return rc;
-
+	/* Registration schedules HELLO; its reply may arrive immediately. */
 	dev_set_drvdata(&rpdev->dev, qdev);
+	rc = qrtr_endpoint_register(&qdev->ep, QRTR_EP_NID_AUTO);
+	if (rc) {
+		dev_set_drvdata(&rpdev->dev, NULL);
+		return rc;
+	}
 
 	dev_dbg(&rpdev->dev, "Qualcomm SMD QRTR driver probed\n");
 
