@@ -5,6 +5,15 @@
 
 menu "Misc devices"
 
+config SAMURAI_SENSOR_POWER
+    bool "Realme X2 Pro manual sensor supply bring-up"
+    depends on ARCH_QCOM && OF && REGULATOR && REMOTEPROC && SYSFS
+    help
+      Manual, board-specific SSC supply test. Both rails remain unvoted
+      until root explicitly enables the state attribute while SLPI is
+      offline. No sensor firmware or service is started by this driver.
+
+
 config SENSORS_LIS3LV02D
 	tristate
 	depends on INPUT
