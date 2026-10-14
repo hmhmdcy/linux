@@ -8659,6 +8659,7 @@ F:	drivers/gpu/
 F:	rust/kernel/drm/
 F:	include/drm/
 F:	include/linux/vga*
+F:	include/trace/events/drm_panel.h
 F:	include/uapi/drm/
 
 DRM DRIVERS AND MISC GPU PATCHES
