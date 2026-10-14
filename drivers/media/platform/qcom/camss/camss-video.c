@@ -7,6 +7,7 @@
  * Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2015-2018 Linaro Ltd.
  */
+#include <linux/module.h>
 #include <linux/slab.h>
 #include <media/media-entity.h>
 #include <media/v4l2-dev.h>
@@ -146,6 +147,42 @@ static int video_queue_setup(struct vb2_queue *q,
 	return 0;
 }
 
+/* Bounded bring-up diagnostics; normal camera operation stays quiet. */
+static bool trace_dma;
+module_param_named(dma_trace, trace_dma, bool, 0600);
+MODULE_PARM_DESC(dma_trace, "Log prepared SM8150 DMA plane ranges");
+
+/* Verify every byte the SM8150 write master may address, including SG joins. */
+static int video_check_dma_mapping(struct camss_video *video,
+				   struct sg_table *sgt, size_t size)
+{
+	struct scatterlist *sg;
+	dma_addr_t address, expected;
+	size_t remaining = size;
+	unsigned int i;
+
+	if (video->camss->res->version != CAMSS_8150)
+		return 0;
+	if (!sgt || !sgt->sgl || !sgt->nents || !size)
+		return -EINVAL;
+	address = sg_dma_address(sgt->sgl);
+	if (address < 0x07400000 || address >= 0xe0000000 ||
+	    size > 0xe0000000 - address)
+		return -ERANGE;
+	expected = address;
+	for_each_sgtable_dma_sg(sgt, sg, i) {
+		size_t length = sg_dma_len(sg);
+
+		if (!length || sg_dma_address(sg) != expected)
+			return -EINVAL;
+		if (length >= remaining)
+			return 0;
+		remaining -= length;
+		expected += length;
+	}
+	return -EINVAL;
+}
+
 static int video_buf_init(struct vb2_buffer *vb)
 {
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
@@ -156,13 +193,20 @@ static int video_buf_init(struct vb2_buffer *vb)
 						&video->active_fmt.fmt.pix_mp;
 	struct sg_table *sgt;
 	unsigned int i;
+	int ret;
 
 	for (i = 0; i < format->num_planes; i++) {
 		sgt = vb2_dma_sg_plane_desc(vb, i);
 		if (!sgt)
 			return -EFAULT;
 
+		ret = video_check_dma_mapping(video, sgt, vb2_plane_size(vb, i));
+		if (ret)
+			return ret;
 		buffer->addr[i] = sg_dma_address(sgt->sgl);
+		if (trace_dma && video->camss->res->version == CAMSS_8150)
+			dev_info(video->camss->dev, "DMA plane %u address %pad size %lu\n",
+				i, &buffer->addr[i], vb2_plane_size(vb, i));
 	}
 
 	if (format->pixelformat == V4L2_PIX_FMT_NV12 ||
@@ -183,6 +227,12 @@ static int video_buf_prepare(struct vb2_buffer *vb)
 	const struct v4l2_pix_format_mplane *format =
 						&video->active_fmt.fmt.pix_mp;
 	unsigned int i;
+	int ret;
+
+	/* Imports can change their mapped SG list between preparations. */
+	ret = video_buf_init(vb);
+	if (ret)
+		return ret;
 
 	for (i = 0; i < format->num_planes; i++) {
 		if (format->plane_fmt[i].sizeimage > vb2_plane_size(vb, i))

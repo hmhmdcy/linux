@@ -3,6 +3,7 @@
 
 qcom-camss-objs += \
 		camss.o \
+		camss-cpas.o \
 		camss-csid.o \
 		camss-csid-4-1.o \
 		camss-csid-4-7.o \

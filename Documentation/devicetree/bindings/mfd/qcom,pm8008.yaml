@@ -88,18 +88,20 @@ properties:
 required:
   - compatible
   - reg
-  - interrupts
   - vdd-l1-l2-supply
   - vdd-l3-l4-supply
   - vdd-l5-supply
   - vdd-l6-supply
   - vdd-l7-supply
-  - gpio-controller
-  - "#gpio-cells"
-  - gpio-ranges
-  - interrupt-controller
-  - "#interrupt-cells"
-  - "#thermal-sensor-cells"
+
+dependencies:
+  interrupt-controller: [ interrupts, "#interrupt-cells" ]
+  "#interrupt-cells": [ interrupts, interrupt-controller ]
+  gpio-controller: [ interrupts, interrupt-controller, "#gpio-cells", gpio-ranges ]
+  "#gpio-cells": [ gpio-controller ]
+  gpio-ranges: [ gpio-controller ]
+  pinctrl: [ gpio-controller ]
+  "#thermal-sensor-cells": [ interrupts, interrupt-controller ]
 
 additionalProperties: false
 

@@ -93,6 +93,7 @@ enum camss_version {
 	CAMSS_8280XP,
 	CAMSS_8300,
 	CAMSS_845,
+	CAMSS_8150,
 	CAMSS_8550,
 	CAMSS_8650,
 	CAMSS_8775P,
@@ -132,6 +133,7 @@ struct camss {
 	struct ispif_device *ispif;
 	struct vfe_device *vfe;
 	void __iomem *csid_wrapper_base;
+	struct camss_cpas *cpas;
 	atomic_t ref_count;
 	int genpd_num;
 	struct device *genpd;
@@ -169,7 +171,7 @@ int camss_enable_clocks(int nclocks, struct camss_clock *clock,
 void camss_disable_clocks(int nclocks, struct camss_clock *clock);
 struct media_pad *camss_find_sensor_pad(struct media_entity *entity);
 s64 camss_get_link_freq(struct media_entity *entity, unsigned int bpp,
-			unsigned int lanes);
+			unsigned int lanes, bool is_cphy);
 int camss_get_pixel_clock(struct media_entity *entity, u64 *pixel_clock);
 int camss_pm_domain_on(struct camss *camss, int id);
 void camss_pm_domain_off(struct camss *camss, int id);
