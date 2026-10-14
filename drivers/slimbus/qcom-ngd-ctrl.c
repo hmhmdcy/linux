@@ -585,6 +585,17 @@ static int qcom_slim_ngd_tx_msg_post(struct qcom_slim_ngd_ctrl *ctrl,
 						DMA_MEM_TO_DEV,
 						DMA_PREP_INTERRUPT);
 	if (!desc->desc) {
+		struct dma_chan *chan = ctrl->dma_tx_channel;
+		struct dma_device *dma = chan ? chan->device : NULL;
+
+		dev_err_once(ctrl->dev,
+			     "TX DMA diagnostic: state=%d qmi=%d channel=%d device=%d sg=%d config_sg=%d len=%d\n",
+			     ctrl->state, !!ctrl->qmi.handle, !!chan, !!dma,
+			     dma && !!dma->device_prep_slave_sg,
+			     dma && !!dma->device_prep_config_sg, len);
+		/* tx_lock serializes reservations; this slot was never queued. */
+		desc->comp = NULL;
+		ctrl->tx_tail = index;
 		dev_err(ctrl->dev, "unable to prepare channel\n");
 		spin_unlock_irqrestore(&ctrl->tx_buf_lock, flags);
 		return -EINVAL;
@@ -802,19 +813,16 @@ static int qcom_slim_ngd_xfer_msg(struct slim_controller *sctrl,
 		 txn->mc <= SLIM_MSG_MC_RECONFIGURE_NOW))
 		return 0;
 
-	if (txn->dt == SLIM_MSG_DEST_ENUMADDR)
-		return -EPROTONOSUPPORT;
+	if (txn->dt == SLIM_MSG_DEST_ENUMADDR) {
+		ret = -EPROTONOSUPPORT;
+		goto err_free_tid;
+	}
 
 	if (txn->msg->num_bytes > SLIM_MSGQ_BUF_LEN ||
 			txn->rl > SLIM_MSGQ_BUF_LEN) {
 		dev_err(ctrl->dev, "msg exceeds HW limit\n");
-		return -EINVAL;
-	}
-
-	pbuf = qcom_slim_ngd_tx_msg_get(ctrl, txn->rl, &tx_sent);
-	if (!pbuf) {
-		dev_err(ctrl->dev, "Message buffer unavailable\n");
-		return -ENOMEM;
+		ret = -EINVAL;
+		goto err_free_tid;
 	}
 
 	if (txn->mt == SLIM_MSG_MT_CORE &&
@@ -859,6 +867,14 @@ static int qcom_slim_ngd_xfer_msg(struct slim_controller *sctrl,
 		txn->rl = txn->msg->num_bytes + 4;
 	}
 
+	mutex_lock(&ctrl->tx_lock);
+	pbuf = qcom_slim_ngd_tx_msg_get(ctrl, txn->rl, &tx_sent);
+	if (!pbuf) {
+		dev_err(ctrl->dev, "Message buffer unavailable\n");
+		ret = -ENOMEM;
+		goto err_unlock;
+	}
+
 	/* HW expects length field to be excluded */
 	txn->rl--;
 	puc = (u8 *)pbuf;
@@ -884,12 +900,9 @@ static int qcom_slim_ngd_xfer_msg(struct slim_controller *sctrl,
 	if (txn->msg && txn->msg->wbuf)
 		memcpy(puc, txn->msg->wbuf, txn->msg->num_bytes);
 
-	mutex_lock(&ctrl->tx_lock);
 	ret = qcom_slim_ngd_tx_msg_post(ctrl, pbuf, txn->rl);
-	if (ret) {
-		mutex_unlock(&ctrl->tx_lock);
-		return ret;
-	}
+	if (ret)
+		goto err_unlock;
 
 	time_left = wait_for_completion_timeout(&tx_sent, HZ);
 	if (!time_left) {
@@ -911,6 +924,16 @@ static int qcom_slim_ngd_xfer_msg(struct slim_controller *sctrl,
 
 	mutex_unlock(&ctrl->tx_lock);
 	return 0;
+
+err_unlock:
+	mutex_unlock(&ctrl->tx_lock);
+err_free_tid:
+	/* Direct user-message callers own their TID and PM error unwind. */
+	if ((usr_msg || slim_tid_txn(txn->mt, txn->mc)) && txn->tid) {
+		slim_free_txn_tid(sctrl, txn);
+		txn->tid = 0;
+	}
+	return ret;
 }
 
 static int qcom_slim_ngd_xfer_msg_sync(struct slim_controller *ctrl,
@@ -1726,6 +1749,11 @@ static int __maybe_unused qcom_slim_ngd_runtime_suspend(struct device *dev)
 		return 0;
 
 	ret = qcom_slim_qmi_power_request(ctrl, false);
+	if (ret)
+		dev_info_once(ctrl->dev,
+			      "NGD suspend rejected: ret=%d state=%d tx_channel=%d rx_channel=%d\n",
+			      ret, ctrl->state, !!ctrl->dma_tx_channel,
+			      !!ctrl->dma_rx_channel);
 	if (ret && ret != -EBUSY)
 		dev_info(ctrl->dev, "slim resource not idle:%d\n", ret);
 	if (!ret || ret == -ETIMEDOUT)

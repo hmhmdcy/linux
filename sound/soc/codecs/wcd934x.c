@@ -1865,35 +1865,39 @@ static int wcd934x_hw_free(struct snd_pcm_substream *substream,
 }
 
 static int wcd934x_trigger(struct snd_pcm_substream *substream, int cmd,
-			   struct snd_soc_dai *dai)
+                          struct snd_soc_dai *dai)
 {
-	struct wcd_slim_codec_dai_data *dai_data;
-	struct wcd934x_codec *wcd;
-	struct slim_stream_config *cfg;
-
-	wcd = snd_soc_component_get_drvdata(dai->component);
-
-	dai_data = &wcd->dai[dai->id];
+	struct wcd934x_codec *wcd = snd_soc_component_get_drvdata(dai->component);
+	struct wcd_slim_codec_dai_data *dai_data = &wcd->dai[dai->id];
+	int ret = 0, cleanup;
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		cfg = &dai_data->sconfig;
-		slim_stream_prepare(dai_data->sruntime, cfg);
-		slim_stream_enable(dai_data->sruntime);
+		ret = slim_stream_prepare(dai_data->sruntime, &dai_data->sconfig);
+		if (ret)
+			break;
+		ret = slim_stream_enable(dai_data->sruntime);
+		if (ret)
+			slim_stream_unprepare(dai_data->sruntime);
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		slim_stream_disable(dai_data->sruntime);
-		slim_stream_unprepare(dai_data->sruntime);
+		ret = slim_stream_disable(dai_data->sruntime);
+		cleanup = slim_stream_unprepare(dai_data->sruntime);
+		if (!ret)
+			ret = cleanup;
 		break;
 	default:
-		break;
+		return -EINVAL;
 	}
-
-	return 0;
+	if (of_machine_is_compatible("realme,samurai"))
+		dev_info(dai->dev, "samurai slim trigger dai=%d command=%d channels=%u rate=%u ret=%d\n",
+			 dai->id, cmd, dai_data->sconfig.ch_count,
+			 dai_data->sconfig.rate, ret);
+	return ret;
 }
 
 static int wcd934x_set_channel_map(struct snd_soc_dai *dai,
