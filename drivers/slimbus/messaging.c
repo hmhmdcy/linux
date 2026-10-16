@@ -129,6 +129,10 @@ int slim_do_transfer(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 
 	if (!clk_pause_msg) {
 		ret = pm_runtime_get_sync(ctrl->dev);
+		if (ret < 0) {
+			pm_runtime_put_noidle(ctrl->dev);
+			return ret;
+		}
 		if (ctrl->sched.clk_state != SLIM_CLK_ACTIVE) {
 			dev_err(ctrl->dev, "ctrl wrong state:%d, ret:%d\n",
 				ctrl->sched.clk_state, ret);
