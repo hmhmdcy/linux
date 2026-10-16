@@ -4027,8 +4027,9 @@
 
 			power-domains = <&camcc IFE_0_GDSC>,
 					<&camcc IFE_1_GDSC>,
-					<&camcc TITAN_TOP_GDSC>;
-			power-domain-names = "ife0", "ife1", "top";
+					<&camcc TITAN_TOP_GDSC>,
+					<&rpmhpd SM8150_MMCX>;
+			power-domain-names = "ife0", "ife1", "top", "mmcx";
 
 			clocks = <&camcc CAM_CC_CAMNOC_AXI_CLK>,
 				 <&camcc CAM_CC_CPAS_AHB_CLK>,

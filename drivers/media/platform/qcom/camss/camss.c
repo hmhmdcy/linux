@@ -4982,7 +4982,8 @@ static int camss_parse_endpoint_node(struct device *dev,
 			fwnode_property_present(ep, "lane-polarities")))
 		return -EINVAL;
 	if (!is_cphy) {
-		if (mipi_csi2->clock_lane > 4)
+		/* Qualcomm 3-phase PHYs label the fixed D-PHY clock lane 7. */
+		if (mipi_csi2->clock_lane > 4 && mipi_csi2->clock_lane != 7)
 			return -EINVAL;
 		used = BIT(mipi_csi2->clock_lane);
 	}
@@ -6040,21 +6041,24 @@ static int __maybe_unused camss_runtime_suspend(struct device *dev)
 {
 	struct camss *camss = dev_get_drvdata(dev);
 	const struct resources_icc *icc_res = camss->res->icc_res;
-	int i, j, ret;
+	int i, ret;
 
 	for (i = 0; i < camss->res->icc_path_num; i++) {
 		ret = icc_set_bw(camss->icc_path[i], 0, 0);
-		if (ret) {
-			/* PM keeps the device active after a failed suspend. */
-			for (j = 0; j < camss->res->icc_path_num; j++)
-				if (icc_set_bw(camss->icc_path[j],
-					icc_res[j].icc_bw_tbl.avg, icc_res[j].icc_bw_tbl.peak))
-					dev_err(dev, "failed to restore CAMSS interconnect vote\n");
-			return ret;
-		}
+		if (ret)
+			goto restore_votes;
 	}
-	camss_cpas_suspend(camss);
-	return 0;
+	ret = camss_cpas_suspend(camss);
+	if (!ret)
+		return 0;
+
+restore_votes:
+	/* A failed suspend leaves the consumer and its suppliers active. */
+	for (i = 0; i < camss->res->icc_path_num; i++)
+		if (icc_set_bw(camss->icc_path[i], icc_res[i].icc_bw_tbl.avg,
+			       icc_res[i].icc_bw_tbl.peak))
+			dev_err(dev, "failed to restore CAMSS interconnect vote\n");
+	return ret;
 }
 
 static int __maybe_unused camss_runtime_resume(struct device *dev)

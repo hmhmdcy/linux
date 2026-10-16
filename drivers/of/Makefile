@@ -25,3 +25,10 @@ obj-$(CONFIG_OF_OVERLAY_KUNIT_TEST) += overlay-test.o
 overlay-test-y := overlay_test.o kunit_overlay_test.dtbo.o
 
 obj-$(CONFIG_OF_UNITTEST) += unittest-data/
+
+obj-$(CONFIG_OF_SAMURAI_CCI_BRINGUP) += samurai-cci-bringup.o
+
+obj-$(CONFIG_OF_SAMURAI_FRONT_IDENTIFY) += samurai-front-identify.o
+obj-$(CONFIG_OF_SAMURAI_PMIC_FIXTURE) += samurai-pmic-fixture.o
+obj-$(CONFIG_OF_SAMURAI_VIO_PHANDLE) += samurai-vio-phandle.o
+obj-$(CONFIG_OF_SAMURAI_FRONT_OVERLAY) += samurai-front-overlay.o

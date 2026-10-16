@@ -96,14 +96,18 @@ properties:
     maxItems: 8
 
   power-domains:
-    minItems: 3
-    maxItems: 3
+    items:
+      - description: IFE0 power domain
+      - description: IFE1 power domain
+      - description: TITAN top power domain
+      - description: MMCX performance domain for camera clocks
 
   power-domain-names:
     items:
       - const: ife0
       - const: ife1
       - const: top
+      - const: mmcx
 
   interconnects:
     minItems: 4

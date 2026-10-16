@@ -5,5 +5,5 @@ struct camss;
 struct camss_cpas;
 int camss_cpas_init(struct camss *camss);
 int camss_cpas_resume(struct camss *camss);
-void camss_cpas_suspend(struct camss *camss);
+int camss_cpas_suspend(struct camss *camss);
 #endif

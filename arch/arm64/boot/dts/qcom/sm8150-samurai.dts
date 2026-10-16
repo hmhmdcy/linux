@@ -583,8 +583,13 @@
 
 &uart13 {
     status = "okay";
-    pinctrl-names = "default";
+    /delete-property/ interrupts;
+    interrupts-extended = <&intc GIC_SPI 585 IRQ_TYPE_LEVEL_HIGH>,
+                          <&tlmm 46 IRQ_TYPE_EDGE_FALLING>;
+    pinctrl-names = "default", "sleep";
     pinctrl-0 = <&samurai_bt_uart_default>;
+    pinctrl-1 = <&samurai_bt_uart_sleep_ctsrts>,
+                <&samurai_bt_uart_sleep_txrx>;
     bluetooth {
         compatible = "qcom,wcn3990-bt";
         /* Same-handset revision-21 files; ROM 0x1001 derives a missing 01 name. */
@@ -796,7 +801,7 @@
 					pinctrl-1 = <&samurai_quat_sleep>;
 					dai@16 {
 						reg = <QUATERNARY_MI2S_RX>;
-						qcom,sd-lines = <0>;
+						qcom,sd-lines = <1>;
 					};
 				};
 			};
@@ -830,13 +835,13 @@
 
 &tlmm {
 	samurai_quat_audio: samurai-quat-audio-state {
-		pins = "gpio137", "gpio138", "gpio139";
+		pins = "gpio137", "gpio138", "gpio140";
 		function = "qua_mi2s";
 		drive-strength = <8>;
 		bias-disable;
 	};
 	samurai_quat_sleep: samurai-quat-sleep-state {
-		pins = "gpio137", "gpio138", "gpio139";
+		pins = "gpio137", "gpio138", "gpio140";
 		function = "gpio";
 		drive-strength = <2>;
 		bias-pull-down;
@@ -850,9 +855,11 @@
 		model = "Realme X2 Pro";
 		widgets = "Speaker", "Left Speaker", "Speaker", "Right Speaker",
 			  "Headphone", "Headphone Jack", "Microphone", "Handset Mic",
-			  "Microphone", "Secondary Mic", "Microphone", "Speaker Mic";
+			  "Microphone", "Secondary Mic", "Microphone", "Speaker Mic",
+			  "Microphone", "Mic Jack";
 		audio-routing = "Left Speaker", "Left OUT", "Right Speaker", "Right OUT",
 				"Headphone Jack", "HPHL", "Headphone Jack", "HPHR",
+				"AMIC2", "Mic Jack", "AMIC2", "MIC BIAS2", "AMIC2", "MCLK",
 				/* Native WCD934x uses distinct DMIC input pins and supplies. */
                 "DMIC0 Pin", "Handset Mic", "DMIC0", "MIC BIAS1", "DMIC0", "MCLK",
                 "DMIC1 Pin", "Secondary Mic", "DMIC1", "MIC BIAS1", "DMIC1", "MCLK",
@@ -908,7 +915,152 @@
 
 /* Native 19781 CSIPHY rail; CAMSS remains disabled pending sensor/CPAS proof. */
 &camss {
-	/* Internal CSID TPG; CCI and all external sensors remain disabled. */
+	/* Physical front sensor and internal CSID test-pattern support. */
 	status = "okay";
 	vdda-phy-supply = <&vreg_l3c_1p2>;
+};
+
+&tlmm {
+    samurai_bt_uart_sleep_ctsrts: samurai-bt-uart-sleep-ctsrts-state {
+        pins = "gpio43", "gpio44";
+        function = "gpio";
+        drive-strength = <2>;
+        /* CTS matches the controller; active-low RTS permits RX wake. */
+        bias-pull-down;
+    };
+
+    samurai_bt_uart_sleep_txrx: samurai-bt-uart-sleep-txrx-state {
+        pins = "gpio45", "gpio46";
+        function = "gpio";
+        drive-strength = <2>;
+        /* Keep idle TX and the RX wake input high while GENI sleeps. */
+        bias-pull-up;
+    };
+};
+
+/* Realme X2 Pro front camera, verified with physical IMX471 RAW frames. */
+#include <dt-bindings/clock/qcom,sm8150-camcc.h>
+#include <dt-bindings/media/video-interfaces.h>
+
+&pm8150l_gpios {
+	/* The unused rear PMIC shares the factory address with the front PMIC. */
+	cam_rear_reset_hog: camera-rear-reset-hog {
+		gpio-hog;
+		gpios = <1 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "camera-rear-reset";
+	};
+};
+
+&i2c4 {
+	pmic@4 {
+		compatible = "qcom,pm8008";
+		reg = <4>;
+		qcom,initial-address = <8>;
+		reset-gpios = <&pm8150l_gpios 4 GPIO_ACTIVE_LOW>;
+		vdd-l1-l2-supply = <&vreg_s8c_1p3>;
+
+		/* The four PLDO input nets have not yet been identified. */
+		regulators {
+			cam_front_vdig: ldo2 {
+				regulator-name = "cam-front-vdig";
+				regulator-min-microvolt = <1050000>;
+				regulator-max-microvolt = <1056000>;
+				regulator-enable-ramp-delay = <1000>;
+			};
+
+			cam_front_vana: ldo5 {
+				regulator-name = "cam-front-vana";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+				regulator-enable-ramp-delay = <1000>;
+			};
+		};
+	};
+};
+
+&tlmm {
+	cam_front_mclk_active: camera-front-mclk-active-state {
+		pins = "gpio15";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_front_mclk_sleep: camera-front-mclk-sleep-state {
+		pins = "gpio15";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		input-enable;
+	};
+
+	cam_front_select_active: camera-front-select-active-state {
+		pins = "gpio29";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-high;
+	};
+
+	cam_front_select_sleep: camera-front-select-sleep-state {
+		pins = "gpio29";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		output-low;
+	};
+
+	cam_front_reset: camera-front-reset-state {
+		pins = "gpio12";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+};
+
+&cci1 {
+	status = "okay";
+};
+
+&cci1_i2c1 {
+	cam_front: camera@10 {
+		compatible = "sony,imx471";
+		reg = <0x10>;
+		power-domains = <&camcc TITAN_TOP_GDSC>;
+		vana-supply = <&cam_front_vana>;
+		vdig-supply = <&cam_front_vdig>;
+		vif-supply = <&vreg_l1c_1p8>;
+		clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clock-rates = <19200000>;
+		reset-gpios = <&tlmm 12 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default", "sleep";
+		pinctrl-0 = <&cam_front_mclk_active &cam_front_select_active &cam_front_reset>;
+		pinctrl-1 = <&cam_front_mclk_sleep &cam_front_select_sleep &cam_front_reset>;
+		orientation = <0>;
+
+		port {
+			cam_front_ep: endpoint {
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <200000000>;
+				remote-endpoint = <&cam_front_csiphy2_ep>;
+			};
+		};
+	};
+};
+
+&camss {
+	ports {
+		port@2 {
+			reg = <2>;
+
+			cam_front_csiphy2_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <0 1 2 3>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				remote-endpoint = <&cam_front_ep>;
+			};
+		};
+	};
 };

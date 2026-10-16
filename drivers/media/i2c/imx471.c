@@ -10,6 +10,8 @@
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/of.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <media/v4l2-cci.h>
@@ -41,7 +43,7 @@
 /* Analog gain control */
 #define IMX471_REG_ANALOG_GAIN			CCI_REG16(0x0204)
 #define IMX471_ANA_GAIN_MIN			0
-#define IMX471_ANA_GAIN_MAX			800
+#define IMX471_ANA_GAIN_MAX			960
 #define IMX471_ANA_GAIN_STEP			1
 #define IMX471_ANA_GAIN_DEFAULT			0
 
@@ -57,7 +59,7 @@
 #define IMX471_REG_ORIENTATION			CCI_REG8(0x0101)
 
 /* Test Pattern Control */
-#define IMX471_REG_TEST_PATTERN			CCI_REG8(0x0600)
+#define IMX471_REG_TEST_PATTERN			CCI_REG16(0x0600)
 
 /* default link frequency and external clock */
 #define IMX471_LINK_FREQ_DEFAULT		200000000LL
@@ -116,13 +118,24 @@
 
 #define to_imx471(_sd) container_of_const(_sd, struct imx471, sd)
 
+enum imx471_supply {
+	IMX471_VANA,
+	IMX471_VDIG,
+	IMX471_VIF,
+};
+
 static const char * const imx471_supply_name[] = {
-	"vana",
+	"vana", /* 2.8V analog */
+	"vdig", /* 1.05V core */
+	"vif",  /* 1.8V interface */
 };
 
 struct imx471_mode {
 	u32 width;
 	u32 height;
+
+	/* Analogue readout window in native pixel-array coordinates. */
+	struct v4l2_rect crop;
 
 	/* V-timing */
 	u32 fll_def;
@@ -280,6 +293,12 @@ static const struct imx471_mode imx471_modes[] = {
 	{
 		.width = 1928,
 		.height = 1088,
+		.crop = {
+			.left = 8,
+			.top = 408,
+			.width = 4640,
+			.height = 2644,
+		},
 		.fll_def = 1308,
 		.fll_min = 1308,
 		.llp = 2328,
@@ -429,13 +448,15 @@ static int imx471_set_pad_format(struct v4l2_subdev *sd,
 
 	imx471_update_pad_format(sensor, mode, fmt);
 
+	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE &&
+	    media_entity_is_streaming(&sensor->sd.entity))
+		return -EBUSY;
+
 	*v4l2_subdev_state_get_format(sd_state, fmt->pad) = fmt->format;
+	*v4l2_subdev_state_get_crop(sd_state, fmt->pad) = mode->crop;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
 		return 0;
-
-	if (media_entity_is_streaming(&sensor->sd.entity))
-		return -EBUSY;
 
 	ret = __v4l2_ctrl_modify_range(sensor->vblank,
 				       mode->fll_min - mode->height,
@@ -461,7 +482,7 @@ static int imx471_get_selection(struct v4l2_subdev *sd,
 	switch (sel->target) {
 	case V4L2_SEL_TGT_CROP:
 		sel->r = *v4l2_subdev_state_get_crop(sd_state, sel->pad);
-		break;
+		return 0;
 
 	case V4L2_SEL_TGT_NATIVE_SIZE:
 		sel->r.top = 0;
@@ -515,6 +536,47 @@ static int imx471_identify_module(struct imx471 *sensor)
 	return 0;
 }
 
+/* Keep the interface and analogue rails established before core power. */
+static int imx471_enable_supplies(struct imx471 *sensor)
+{
+	int ret;
+
+	if (!dev_of_node(sensor->dev))
+		return regulator_bulk_enable(ARRAY_SIZE(imx471_supply_name), sensor->supplies);
+
+	ret = regulator_enable(sensor->supplies[IMX471_VIF].consumer);
+	if (ret)
+		return ret;
+	usleep_range(1000, 2000);
+	ret = regulator_enable(sensor->supplies[IMX471_VANA].consumer);
+	if (ret)
+		goto disable_vif;
+	usleep_range(1000, 2000);
+	ret = regulator_enable(sensor->supplies[IMX471_VDIG].consumer);
+	if (ret)
+		goto disable_vana;
+	usleep_range(1000, 2000);
+	return 0;
+
+disable_vana:
+	regulator_disable(sensor->supplies[IMX471_VANA].consumer);
+disable_vif:
+	regulator_disable(sensor->supplies[IMX471_VIF].consumer);
+	return ret;
+}
+
+static void imx471_disable_supplies(struct imx471 *sensor)
+{
+	if (!dev_of_node(sensor->dev)) {
+		regulator_bulk_disable(ARRAY_SIZE(imx471_supply_name), sensor->supplies);
+		return;
+	}
+
+	regulator_disable(sensor->supplies[IMX471_VDIG].consumer);
+	regulator_disable(sensor->supplies[IMX471_VANA].consumer);
+	regulator_disable(sensor->supplies[IMX471_VIF].consumer);
+}
+
 static int imx471_power_off(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
@@ -523,10 +585,9 @@ static int imx471_power_off(struct device *dev)
 	clk_disable_unprepare(sensor->img_clk);
 	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
 
-	regulator_bulk_disable(ARRAY_SIZE(imx471_supply_name),
-			       sensor->supplies);
+	imx471_disable_supplies(sensor);
 
-	return 0;
+	return pinctrl_pm_select_sleep_state(dev);
 }
 
 static int imx471_power_on(struct device *dev)
@@ -535,19 +596,21 @@ static int imx471_power_on(struct device *dev)
 	struct imx471 *sensor = to_imx471(sd);
 	int ret;
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(imx471_supply_name),
-				    sensor->supplies);
+	ret = pinctrl_pm_select_default_state(dev);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to select active pins\n");
+
+	ret = imx471_enable_supplies(sensor);
 	if (ret < 0) {
 		dev_err(dev, "failed to enable regulators: %d\n", ret);
-		return ret;
+		goto error_sleep_pins;
 	}
 
 	ret = clk_prepare_enable(sensor->img_clk);
 	if (ret < 0) {
-		regulator_bulk_disable(ARRAY_SIZE(imx471_supply_name),
-				       sensor->supplies);
+		imx471_disable_supplies(sensor);
 		dev_err(dev, "failed to enable imaging clock: %d\n", ret);
-		return ret;
+		goto error_sleep_pins;
 	}
 
 	gpiod_set_value_cansleep(sensor->reset_gpio, 0);
@@ -555,6 +618,11 @@ static int imx471_power_on(struct device *dev)
 	usleep_range(10000, 15000);
 
 	return 0;
+
+error_sleep_pins:
+	if (pinctrl_pm_select_sleep_state(dev))
+		dev_err(dev, "failed to restore sleep pins\n");
+	return ret;
 }
 
 static int imx471_enable_stream(struct v4l2_subdev *sd,
@@ -939,10 +1007,17 @@ static const struct acpi_device_id imx471_acpi_ids[] __maybe_unused = {
 };
 MODULE_DEVICE_TABLE(acpi, imx471_acpi_ids);
 
+static const struct of_device_id imx471_of_match[] = {
+	{ .compatible = "sony,imx471" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, imx471_of_match);
+
 static struct i2c_driver imx471_i2c_driver = {
 	.driver = {
 		.name = "imx471",
 		.acpi_match_table = ACPI_PTR(imx471_acpi_ids),
+		.of_match_table = imx471_of_match,
 		.pm = pm_sleep_ptr(&imx471_pm_ops),
 	},
 	.probe = imx471_probe,
