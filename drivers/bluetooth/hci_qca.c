@@ -80,9 +80,10 @@ enum qca_flags {
 	QCA_BT_OFF,
 	QCA_ROM_FW,
 	QCA_DEBUGFS_CREATED,
+	QCA_POWER_PULSE,
 };
 
-/* Observation only: parsing, pulse timing and retry behavior are unchanged. */
+/* Diagnostic tags are independent of the power-pulse receive window. */
 enum qca_rx_phase {
 	QCA_RX_UNSPECIFIED,
 	QCA_RX_POWER_OFF_PULSE,
@@ -154,6 +155,7 @@ struct qca_data {
 	struct sk_buff *rx_skb;
 	u32 rx_phase;
 	u32 requested_baudrate;
+	atomic_t pulse_rx_nuls;
 	struct sk_buff_head txq;
 	struct sk_buff_head tx_wait_q;	/* HCI_IBS wait queue	*/
 	struct sk_buff_head rx_memdump_q;	/* Memdump wait queue	*/
@@ -630,6 +632,7 @@ static int qca_open(struct hci_uart *hu)
 
 	qca->vote_last_jif = jiffies;
 
+	atomic_set(&qca->pulse_rx_nuls, 0);
 	hu->priv = qca;
 
 	if (hu->serdev) {
@@ -682,6 +685,8 @@ static void qca_debugfs_init(struct hci_dev *hdev)
 
 	/* read only */
 	mode = 0444;
+	debugfs_create_atomic_t("pulse_rx_nuls", mode, ibs_dir,
+				&qca->pulse_rx_nuls);
 	debugfs_create_u8("tx_ibs_state", mode, ibs_dir, &qca->tx_ibs_state);
 	debugfs_create_u8("rx_ibs_state", mode, ibs_dir, &qca->rx_ibs_state);
 	debugfs_create_u64("ibs_sent_sleeps", mode, ibs_dir,
@@ -1295,11 +1300,27 @@ static int qca_recv(struct hci_uart *hu, const void *data, int count)
 {
 	struct qca_data *qca = hu->priv;
 	unsigned int partial = qca->rx_skb ? qca->rx_skb->len : 0;
+	const u8 *buffer = data;
+	int received = count;
+	int nuls = 0;
 
 	if (!test_bit(HCI_UART_REGISTERED, &hu->flags))
 		return -EUNATCH;
 
-	qca->rx_skb = h4_recv_buf(hu, qca->rx_skb, data, count,
+	/* Power-pulse traffic is not H4. Preserve zeros in partial frames. */
+	if (test_bit(QCA_POWER_PULSE, &qca->flags) &&
+	    !qca->rx_skb && !hu->padding) {
+		while (count > 0 && *buffer == 0) {
+			buffer++;
+			count--;
+			nuls++;
+		}
+		atomic_add(nuls, &qca->pulse_rx_nuls);
+		if (!count)
+			return received;
+	}
+
+	qca->rx_skb = h4_recv_buf(hu, qca->rx_skb, buffer, count,
 				  qca_recv_pkts, ARRAY_SIZE(qca_recv_pkts));
 	if (IS_ERR(qca->rx_skb)) {
 		int err = PTR_ERR(qca->rx_skb);
@@ -1307,12 +1328,12 @@ static int qca_recv(struct hci_uart *hu, const void *data, int count)
 			   "Frame reassembly failed (%d) phase=%u baud=%u chunk=%d partial=%u first=%02x",
 			   err, READ_ONCE(qca->rx_phase),
 			   READ_ONCE(qca->requested_baudrate), count, partial,
-			   count > 0 ? ((const u8 *)data)[0] : 0);
+			   count > 0 ? buffer[0] : 0);
 		qca->rx_skb = NULL;
 		return err;
 	}
 
-	return count;
+	return received;
 }
 
 static struct sk_buff *qca_dequeue(struct hci_uart *hu)
@@ -1426,6 +1447,7 @@ static inline void host_set_baudrate(struct hci_uart *hu, unsigned int speed)
 static int qca_send_power_pulse(struct hci_uart *hu, bool on)
 {
 	int timeout = CMD_TRANS_TIMEOUT;
+	struct qca_data *qca = hu->priv;
 	int ret;
 	u8 cmd = on ? QCA_WCN3990_POWERON_PULSE : QCA_WCN3990_POWEROFF_PULSE;
 
@@ -1443,12 +1465,15 @@ static int qca_send_power_pulse(struct hci_uart *hu, bool on)
 		   on ? QCA_RX_POWER_ON_PULSE : QCA_RX_POWER_OFF_PULSE);
 	bt_dev_dbg(hu->hdev, "sending power pulse %02x to controller", cmd);
 
+	set_bit(QCA_POWER_PULSE, &qca->flags);
 	serdev_device_write_flush(hu->serdev);
 	hci_uart_set_flow_control(hu, true);
 	ret = serdev_device_write_buf(hu->serdev, &cmd, sizeof(cmd));
-	if (ret < 0) {
+	if (ret != 1) {
 		bt_dev_err(hu->hdev, "failed to send power pulse %02x", cmd);
-		return ret;
+		if (ret >= 0)
+			ret = -EIO;
+		goto restore_flow;
 	}
 
 	serdev_device_wait_until_sent(hu->serdev, timeout);
@@ -1460,7 +1485,13 @@ static int qca_send_power_pulse(struct hci_uart *hu, bool on)
 	else
 		usleep_range(1000, 10000);
 
+	clear_bit(QCA_POWER_PULSE, &qca->flags);
 	return 0;
+
+restore_flow:
+	hci_uart_set_flow_control(hu, false);
+	clear_bit(QCA_POWER_PULSE, &qca->flags);
+	return ret;
 }
 
 static unsigned int qca_get_speed(struct hci_uart *hu,
