@@ -906,6 +906,37 @@ static bool vfe_output_wanted(struct vfe_line *line, struct vfe_output *output)
 	return output->wm_num && vb2_is_streaming(&output->video_out.vb2_q);
 }
 
+/* Keep active auxiliary buffers queued while only the image stream stops. */
+static void vfe_requeue_active_buffers(struct vfe_output *output)
+{
+	int i;
+
+	for (i = CAMSS_INIT_BUF_COUNT - 1; i >= 0; i--) {
+		struct camss_buffer *buf = output->buf[i];
+
+		if (!buf)
+			continue;
+		buf->sof_valid = false;
+		list_add(&buf->queue, &output->pending_bufs);
+		output->buf[i] = NULL;
+	}
+	output->gen2.active_num = 0;
+}
+
+/* Called with output_lock held, before any owned buffers can be recycled. */
+static void vfe_stop_one_output(struct vfe_line *line, struct vfe_output *output)
+{
+	struct vfe_device *vfe = to_vfe(line);
+	const struct vfe_hw_ops *ops = vfe->res->hw_ops;
+	unsigned int i;
+
+	if (ops->vfe_output_stop)
+		ops->vfe_output_stop(vfe, output);
+	else
+		for (i = 0; i < output->wm_num; i++)
+			ops->vfe_wm_stop(vfe, output->wm[i].bus_client, line);
+}
+
 static int vfe_enable_one_output(struct vfe_line *line, struct vfe_output *output)
 {
 	struct vfe_device *vfe = to_vfe(line);
@@ -1013,7 +1044,7 @@ int vfe_enable_output_v2(struct vfe_line *line)
 	unsigned long flags;
 	unsigned int frame_skip = 0;
 	unsigned int i;
-	int ret;
+	int ret = 0;
 
 	sensor_pad = camss_find_sensor_pad(&line->subdev.entity);
 	if (sensor_pad) {
@@ -1037,6 +1068,23 @@ int vfe_enable_output_v2(struct vfe_line *line)
 		ret = vfe_enable_one_output(line, &line->output[i]);
 		if (ret)
 			break;
+	}
+
+	if (ret) {
+		bool stopped = false;
+
+		while (i--) {
+			struct vfe_output *output = &line->output[i];
+
+			if (output->state != VFE_OUTPUT_ON)
+				continue;
+			vfe_stop_one_output(line, output);
+			vfe_requeue_active_buffers(output);
+			output->state = VFE_OUTPUT_OFF;
+			stopped = true;
+		}
+		if (stopped)
+			ops->reg_update(vfe, line->id);
 	}
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
@@ -1304,9 +1352,8 @@ int vfe_put_output(struct vfe_line *line)
 static void vfe_disable_output(struct vfe_line *line)
 {
 	struct vfe_device *vfe = to_vfe(line);
-	const struct vfe_hw_ops *ops = vfe->res->hw_ops;
 	unsigned long flags;
-	unsigned int i, o;
+	unsigned int o;
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
 	for (o = 0; o < line->num_outputs; o++) {
@@ -1316,12 +1363,12 @@ static void vfe_disable_output(struct vfe_line *line)
 		if (o && output->state != VFE_OUTPUT_ON)
 			continue;
 
-		if (ops->vfe_output_stop)
-			ops->vfe_output_stop(vfe, output);
+		vfe_stop_one_output(line, output);
+		if (o && output->video_out.type == V4L2_BUF_TYPE_META_CAPTURE)
+			vfe_requeue_active_buffers(output);
 		else
-			for (i = 0; i < output->wm_num; i++)
-				ops->vfe_wm_stop(vfe, output->wm[i].bus_client, line);
-		output->gen2.active_num = 0;
+			output->gen2.active_num = 0;
+		output->state = VFE_OUTPUT_OFF;
 	}
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
