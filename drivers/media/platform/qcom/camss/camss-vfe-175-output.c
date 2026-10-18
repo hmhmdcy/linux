@@ -8,6 +8,7 @@
 #include "camss.h"
 #include "camss-vfe.h"
 #include "camss-vfe-175-output.h"
+#include "camss-vfe-175-stats.h"
 
 #define VFE_175_FULL_MAX_WIDTH               4096
 #define VFE_175_FULL_MAX_HEIGHT              4096
@@ -121,6 +122,12 @@ int vfe_175_validate_output(const struct vfe_output *output)
 		const struct vfe_output *params = &output->line->output[1];
 
 		if (params->pad != MSM_VFE_PAD_SINK_PARAMS || params->wm_num)
+			return -EINVAL;
+	} else if (output->line->num_outputs == 3) {
+		const struct vfe_output *params = &output->line->output[1];
+
+		if (params->pad != MSM_VFE_PAD_SINK_PARAMS || params->wm_num ||
+		    vfe_175_stats_validate_output(&output->line->output[2]))
 			return -EINVAL;
 	} else if (output->line->num_outputs != 1) {
 		return -EINVAL;

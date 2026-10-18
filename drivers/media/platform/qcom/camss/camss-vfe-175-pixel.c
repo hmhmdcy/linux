@@ -93,7 +93,7 @@ static int vfe_175_params_unsupported(struct device *dev,
 	return -EINVAL;
 }
 
-const struct v4l2_isp_params_block_type_info vfe_175_params_info[2] = {
+const struct v4l2_isp_params_block_type_info vfe_175_params_info[6] = {
 	[0] = {
 		.size = sizeof(struct v4l2_isp_block_header),
 		.block_validate = vfe_175_params_unsupported,
@@ -101,6 +101,22 @@ const struct v4l2_isp_params_block_type_info vfe_175_params_info[2] = {
 	[CAMSS_PARAMS_WB_GAIN] = {
 		.size = sizeof(struct camss_params_wb_gain),
 		.block_validate = vfe_175_wb_validate,
+	},
+	[CAMSS_PARAMS_CHROMA_ENHAN] = {
+		.size = sizeof(struct camss_params_chroma_enhan),
+		.block_validate = vfe_175_params_unsupported,
+	},
+	[CAMSS_PARAMS_COLOR_CORRECT] = {
+		.size = sizeof(struct camss_params_color_correct),
+		.block_validate = vfe_175_params_unsupported,
+	},
+	[CAMSS_PARAMS_GAMMA] = {
+		.size = sizeof(struct camss_params_gamma),
+		.block_validate = vfe_175_params_unsupported,
+	},
+	[CAMSS_PARAMS_AEC_BHIST] = {
+		.size = sizeof(struct camss_params_aec_bhist),
+		.block_validate = vfe_175_bhist_validate,
 	},
 };
 
@@ -156,6 +172,9 @@ int vfe_175_pixel_prepare(struct vfe_line *line)
 		.wb_enabled = true,
 	};
 	vfe_175_wb_write(vfe);
+	ret = vfe_175_stats_prepare(line);
+	if (ret)
+		goto error;
 
 	return 0;
 
@@ -187,6 +206,11 @@ void vfe_175_params_apply(struct vfe_device *vfe, struct vfe_line *line,
 			(const void *)&params->data[offset];
 		const struct camss_params_wb_gain *wb;
 
+		if (block->type == CAMSS_PARAMS_AEC_BHIST) {
+			vfe_175_stats_params(vfe, line, block);
+			offset += block->size;
+			continue;
+		}
 		if (block->flags & V4L2_ISP_PARAMS_FL_BLOCK_DISABLE) {
 			vfe->pixel175.wb_enabled = false;
 		} else {

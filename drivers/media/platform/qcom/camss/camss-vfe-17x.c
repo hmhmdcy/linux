@@ -641,6 +641,8 @@ static const struct camss_video_ops vfe_video_ops_175 = {
 	.flush_buffers = vfe_flush_buffers,
 	.prepare_dma_buffer = vfe_prepare_dma_175,
 	.prepare_buffer = vfe_params_prepare,
+	.start_metadata = vfe_start_metadata_v2,
+	.stop_metadata = vfe_stop_metadata_v2,
 };
 
 static void vfe_subdev_init_175(struct device *dev, struct vfe_device *vfe)
@@ -653,8 +655,9 @@ static void vfe_subdev_init_175(struct device *dev, struct vfe_device *vfe)
 
 		vfe_add_yuv(&pix->output[0], 3, 4, 0);
 		vfe_add_params(&pix->output[1], 0);
-		/* Keep shared pad indices; undeclared DS/stats reject formats. */
-		vfe_set_pix(pix, 2);
+		vfe_add_stats(&pix->output[2], 16, 1);
+		/* Keep shared pad indices; undeclared DS outputs reject formats. */
+		vfe_set_pix(pix, 3);
 	}
 }
 
@@ -674,10 +677,30 @@ static int vfe_line_prepare_175(struct vfe_line *line)
 	return vfe_175_pixel_prepare(line);
 }
 
+static int vfe_output_prepare_175(struct vfe_device *vfe,
+				  struct vfe_output *output)
+{
+	const struct vfe_175_stats_state *s = &vfe->pixel175.stats;
+	int ret;
+
+	if (output->pad == MSM_VFE_PAD_SRC_STATS) {
+		ret = vfe_175_stats_validate_output(output);
+		if (ret)
+			return ret;
+		return s->width >= 4 && s->height >= 2 ? 0 : -EINVAL;
+	}
+	if (output->line->is_pix)
+		return vfe_175_validate_output(output);
+
+	return 0;
+}
+
 static void vfe_output_start_175(struct vfe_device *vfe,
 				 struct vfe_output *output)
 {
-	if (output->line->is_pix)
+	if (output->pad == MSM_VFE_PAD_SRC_STATS)
+		vfe_175_stats_start(vfe, output);
+	else if (output->line->is_pix)
 		vfe_175_full_start(vfe, output);
 	else
 		vfe_wm_start(vfe, output->wm[0].bus_client, output->line);
@@ -686,7 +709,9 @@ static void vfe_output_start_175(struct vfe_device *vfe,
 static void vfe_output_stop_175(struct vfe_device *vfe,
 				struct vfe_output *output)
 {
-	if (output->line->is_pix) {
+	if (output->pad == MSM_VFE_PAD_SRC_STATS)
+		vfe_175_stats_stop(vfe, output);
+	else if (output->line->is_pix) {
 		vfe_175_full_stop(vfe, output);
 		if (output->pad == MSM_VFE_PAD_SRC)
 			vfe_175_pixel_stop(vfe);
@@ -698,7 +723,9 @@ static void vfe_output_update_175(struct vfe_device *vfe,
 				  struct vfe_output *output,
 				  struct camss_buffer *buf)
 {
-	if (output->line->is_pix)
+	if (output->pad == MSM_VFE_PAD_SRC_STATS)
+		vfe_175_stats_update(vfe, output);
+	else if (output->line->is_pix)
 		vfe_175_full_update(vfe, output, buf);
 	else
 		vfe_wm_update(vfe, output->wm[0].bus_client, buf->addr[0],
@@ -724,6 +751,7 @@ const struct vfe_hw_ops vfe_ops_175 = {
 	.vfe_enable = vfe_enable,
 	.vfe_halt = vfe_halt,
 	.violation_read = vfe_violation_read,
+	.vfe_output_prepare = vfe_output_prepare_175,
 	.vfe_output_start = vfe_output_start_175,
 	.vfe_output_stop = vfe_output_stop_175,
 	.vfe_output_update = vfe_output_update_175,
