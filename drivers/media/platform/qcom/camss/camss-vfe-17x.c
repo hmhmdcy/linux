@@ -652,9 +652,9 @@ static void vfe_subdev_init_175(struct device *dev, struct vfe_device *vfe)
 		struct vfe_line *pix = &vfe->line[VFE_LINE_PIX];
 
 		vfe_add_yuv(&pix->output[0], 3, 4, 0);
-		vfe_set_pix(pix, 1);
-		/* Only sink and FULL are implemented; no DS or metadata pads yet. */
-		pix->num_pads = MSM_VFE_PAD_NUM_RDI;
+		vfe_add_params(&pix->output[1], 0);
+		/* Keep shared pad indices; undeclared DS/stats reject formats. */
+		vfe_set_pix(pix, 2);
 	}
 }
 
