@@ -203,8 +203,11 @@ static irqreturn_t vfe_isr(int irq, void *dev)
 		}
 
 		for (i = 0; i < TFE_SUBGROUP_NUM; i++) {
-			if (bus_status & TFE_BUS_IRQ_MASK_BUF_DONE(i))
-				vfe_buf_done(vfe, __subgroup_to_line(i));
+			if (bus_status & TFE_BUS_IRQ_MASK_BUF_DONE(i)) {
+				struct camss_buf_done_info info = {};
+
+				vfe_buf_done(vfe, __subgroup_to_line(i), &info);
+			}
 		}
 
 		if (bus_status & TFE_BUS_IRQ_MASK_0_CONS_VIOL)
@@ -282,7 +285,7 @@ static u32 vfe_packer_format(struct vfe_device *vfe, u32 pixelformat)
 
 static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 {
-	struct v4l2_pix_format_mplane *pix = &line->video_out.active_fmt.fmt.pix_mp;
+	struct v4l2_pix_format_mplane *pix = &line->output[0].video_out.active_fmt.fmt.pix_mp;
 	u32 stride = pix->plane_fmt[0].bytesperline;
 	u8 client = tfe_wm_client_map[wm];
 	u32 cfg = TFE_BUS_CLIENT_CFG_EN;
@@ -335,7 +338,7 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 		vfe->id, client, pix->width, pix->height, stride);
 }
 
-static void vfe_wm_stop(struct vfe_device *vfe, u8 wm)
+static void vfe_wm_stop(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 {
 	u8 client = tfe_wm_client_map[wm];
 
@@ -352,6 +355,7 @@ static const struct camss_video_ops vfe_video_ops_520 = {
 static void vfe_subdev_init(struct device *dev, struct vfe_device *vfe)
 {
 	vfe->video_ops = vfe_video_ops_520;
+	vfe->line[VFE_LINE_PIX].is_pix = true;
 }
 
 static void vfe_reg_update(struct vfe_device *vfe, enum vfe_line_id line_id)

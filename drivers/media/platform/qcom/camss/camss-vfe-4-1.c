@@ -475,8 +475,8 @@ static void vfe_bus_disconnect_wm_from_rdi(struct vfe_device *vfe, u8 wm,
 static void vfe_set_xbar_cfg(struct vfe_device *vfe, struct vfe_output *output,
 			     u8 enable)
 {
-	struct vfe_line *line = container_of(output, struct vfe_line, output);
-	u32 p = line->video_out.active_fmt.fmt.pix_mp.pixelformat;
+	struct vfe_line *line = output->line;
+	u32 p = line->output[0].video_out.active_fmt.fmt.pix_mp.pixelformat;
 	u32 reg;
 	unsigned int i;
 
@@ -493,16 +493,16 @@ static void vfe_set_xbar_cfg(struct vfe_device *vfe, struct vfe_output *output,
 			break;
 		}
 
-		if (output->wm_idx[i] % 2 == 1)
+		if (output->wm[i].bus_client % 2 == 1)
 			reg <<= 16;
 
 		if (enable)
 			vfe_reg_set(vfe,
-				    VFE_0_BUS_XBAR_CFG_x(output->wm_idx[i]),
+				    VFE_0_BUS_XBAR_CFG_x(output->wm[i].bus_client),
 				    reg);
 		else
 			vfe_reg_clr(vfe,
-				    VFE_0_BUS_XBAR_CFG_x(output->wm_idx[i]),
+				    VFE_0_BUS_XBAR_CFG_x(output->wm[i].bus_client),
 				    reg);
 	}
 }
@@ -555,7 +555,7 @@ static void vfe_enable_irq_wm_line(struct vfe_device *vfe, u8 wm,
 static void vfe_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 				    enum vfe_line_id line_id, u8 enable)
 {
-	struct vfe_output *output = &vfe->line[line_id].output;
+	struct vfe_output *output = &vfe->line[line_id].output[0];
 	unsigned int i;
 	u32 irq_en0;
 	u32 irq_en1;
@@ -568,8 +568,8 @@ static void vfe_enable_irq_pix_line(struct vfe_device *vfe, u8 comp,
 	irq_en1 = VFE_0_IRQ_MASK_1_CAMIF_ERROR;
 	for (i = 0; i < output->wm_num; i++) {
 		irq_en1 |= VFE_0_IRQ_MASK_1_IMAGE_MASTER_n_BUS_OVERFLOW(
-							output->wm_idx[i]);
-		comp_mask |= (1 << output->wm_idx[i]) << comp * 8;
+							output->wm[i].bus_client);
+		comp_mask |= (1 << output->wm[i].bus_client) << comp * 8;
 	}
 
 	if (enable) {
@@ -631,7 +631,7 @@ static void vfe_set_demux_cfg(struct vfe_device *vfe, struct vfe_line *line)
 
 static void vfe_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 {
-	u32 p = line->video_out.active_fmt.fmt.pix_mp.pixelformat;
+	u32 p = line->output[0].video_out.active_fmt.fmt.pix_mp.pixelformat;
 	u32 reg;
 	u16 input, output;
 	u8 interp_reso;
@@ -686,7 +686,7 @@ static void vfe_set_scale_cfg(struct vfe_device *vfe, struct vfe_line *line)
 
 static void vfe_set_crop_cfg(struct vfe_device *vfe, struct vfe_line *line)
 {
-	u32 p = line->video_out.active_fmt.fmt.pix_mp.pixelformat;
+	u32 p = line->output[0].video_out.active_fmt.fmt.pix_mp.pixelformat;
 	u32 reg;
 	u16 first, last;
 

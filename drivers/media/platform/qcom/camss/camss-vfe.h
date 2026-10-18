@@ -14,6 +14,7 @@
 #include <linux/spinlock_types.h>
 #include <media/media-entity.h>
 #include <media/v4l2-device.h>
+#include <media/v4l2-isp.h>
 #include <media/v4l2-subdev.h>
 
 #include "camss-video.h"
@@ -21,7 +22,14 @@
 
 #define MSM_VFE_PAD_SINK 0
 #define MSM_VFE_PAD_SRC 1
-#define MSM_VFE_PADS_NUM 2
+#define MSM_VFE_PAD_SRC_DS4 2
+#define MSM_VFE_PAD_SRC_DS16 3
+#define MSM_VFE_PAD_SRC_STATS 4
+#define MSM_VFE_PAD_SINK_PARAMS 5
+#define MSM_VFE_PAD_NUM_RDI 2
+#define MSM_VFE_PAD_NUM_PIX 6
+#define MSM_VFE_MAX_PADS MSM_VFE_PAD_NUM_PIX
+#define MSM_VFE_NUM_OUTPUTS (MSM_VFE_MAX_PADS - 1)	/* every pad but the sink */
 
 #define MSM_VFE_IMAGE_MASTERS_NUM 7
 #define MSM_VFE_COMPOSITE_IRQ_NUM 4
@@ -52,13 +60,65 @@ enum vfe_line_id {
 	VFE_LINE_RDI0 = 0,
 	VFE_LINE_RDI1 = 1,
 	VFE_LINE_RDI2 = 2,
-	VFE_LINE_PIX = 3,
+	VFE_LINE_RDI3 = 3,	/* IFE lite */
+	VFE_LINE_PIX = 3,	/* full IFE, when line->is_pix */
 	VFE_LINE_NUM_MAX = 4
 };
 
+enum vfe_packer_format_v3 {
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN_128 = 0,
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN_8,
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN_8_ODD_EVEN,
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN_8_LSB_MSB_10,
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN_8_LSB_MSB_10_ODD_EVEN,
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN_16_10BPP,
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN_16_12BPP,
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN_16_14BPP,
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN_16_16BPP,
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN_32,
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN_64,
+	VFE_BUS_WM_PACKER_FMT_V3_TP_10,
+	VFE_BUS_WM_PACKER_FMT_V3_MIPI10,
+	VFE_BUS_WM_PACKER_FMT_V3_MIPI12,
+	VFE_BUS_WM_PACKER_FMT_V3_MIPI14,
+	VFE_BUS_WM_PACKER_FMT_V3_MIPI20,
+	VFE_BUS_WM_PACKER_FMT_V3_PLAIN32_20BPP,
+	VFE_BUS_WM_PACKER_FMT_V3_MAX,
+};
+
+enum vfe_v3_comp_group {
+	VFE_V3_COMP_GRP_0,
+	VFE_V3_COMP_GRP_1,
+	VFE_V3_COMP_GRP_2,
+	VFE_V3_COMP_GRP_3,
+	VFE_V3_COMP_GRP_4,
+	VFE_V3_COMP_GRP_5,
+	VFE_V3_COMP_GRP_6,
+	VFE_V3_COMP_GRP_7,
+	VFE_V3_COMP_GRP_8,
+	VFE_V3_COMP_GRP_9,
+	VFE_V3_COMP_GRP_10,
+	VFE_V3_COMP_GRP_11,
+	VFE_V3_COMP_GRP_12,
+	VFE_V3_COMP_GRP_13,
+	VFE_V3_COMP_GRP_14,
+	VFE_V3_COMP_GRP_15,
+	VFE_V3_COMP_GRP_16,
+	VFE_V3_COMP_GRP_MAX,
+};
+
+struct vfe_wm {
+	u8 bus_client;
+	u8 plane;
+};
+
+#define VFE_MAX_WM_PER_OUTPUT 3
+
 struct vfe_output {
+	u8 pad;			/* index into line->pads[] this output serves */
+	u8 comp_group;
 	u8 wm_num;
-	u8 wm_idx[3];
+	struct vfe_wm wm[VFE_MAX_WM_PER_OUTPUT];
 
 	struct camss_buffer *buf[2];
 	struct camss_buffer *last_buffer;
@@ -82,22 +142,36 @@ struct vfe_output {
 	int wait_reg_update;
 	struct completion sof;
 	struct completion reg_update;
+
+	struct vfe_line *line;
+	struct camss_video video_out;
+
+	/*
+	 * Kernel buffer the write masters fill, for outputs the CPU copies
+	 * to userspace at completion (statistics)
+	 */
+	void *dma_vaddr;
+	dma_addr_t dma_addr;
+	size_t dma_size;
 };
 
 struct vfe_line {
 	enum vfe_line_id id;
+	bool is_pix;
 	struct v4l2_subdev subdev;
-	struct media_pad pads[MSM_VFE_PADS_NUM];
-	struct v4l2_mbus_framefmt fmt[MSM_VFE_PADS_NUM];
+	struct media_pad pads[MSM_VFE_MAX_PADS];
+	struct v4l2_mbus_framefmt fmt[MSM_VFE_MAX_PADS];
+	u32 num_pads;
 	struct v4l2_rect compose;
 	struct v4l2_rect crop;
-	struct camss_video video_out;
-	struct vfe_output output;
+	struct vfe_output output[MSM_VFE_NUM_OUTPUTS];
+	u32 num_outputs;
 	const struct camss_format_info *formats;
 	unsigned int nformats;
 };
 
 struct vfe_device;
+struct camss_buf_done_info;
 
 struct vfe_hw_ops {
 	void (*enable_irq)(struct vfe_device *vfe);
@@ -115,12 +189,41 @@ struct vfe_hw_ops {
 	int (*vfe_enable)(struct vfe_line *line);
 	int (*vfe_halt)(struct vfe_device *vfe);
 	void (*violation_read)(struct vfe_device *vfe);
+
+	/* RDI based API - deprecated */
 	void (*vfe_wm_start)(struct vfe_device *vfe, u8 wm,
 			     struct vfe_line *line);
-	void (*vfe_wm_stop)(struct vfe_device *vfe, u8 wm);
-	void (*vfe_buf_done)(struct vfe_device *vfe, int port_id);
+	void (*vfe_wm_stop)(struct vfe_device *vfe, u8 wm,
+			    struct vfe_line *line);
+	void (*vfe_buf_done)(struct vfe_device *vfe, int port_id,
+			     struct camss_buf_done_info *buf_done_info);
 	void (*vfe_wm_update)(struct vfe_device *vfe, u8 wm, u32 addr,
 			      struct vfe_line *line);
+
+	/*
+	 * Optional: program line-level hardware once the line's outputs are
+	 * reserved, outside output_lock. Runs before vfe_wm_start() and the
+	 * reg update that latches it.
+	 */
+	void (*vfe_line_prepare)(struct vfe_line *line);
+
+	/*
+	 * Optional: the parameters blocks the pixel line accepts, indexed by
+	 * block type, and how to apply a validated parameters buffer. Applying
+	 * runs with output_lock held, ahead of a reg update.
+	 */
+	const struct v4l2_isp_params_block_type_info *params_info;
+	unsigned int params_num_types;
+	void (*vfe_params_apply)(struct vfe_device *vfe, struct vfe_line *line,
+				 const struct v4l2_isp_buffer *params);
+
+	/* Output based API - new and shiny */
+	void (*vfe_output_start)(struct vfe_device *vfe, struct vfe_output *output);
+	void (*vfe_output_stop)(struct vfe_device *vfe, struct vfe_output *output);
+	void (*vfe_output_buf_done)(struct vfe_device *vfe, struct vfe_output *output);
+	void (*vfe_output_update)(struct vfe_device *vfe, struct vfe_output *output,
+				  struct camss_buffer *buf);
+
 };
 
 struct vfe_isr_ops {
@@ -249,7 +352,8 @@ extern const struct vfe_hw_ops vfe_ops_170;
 extern const struct vfe_hw_ops vfe_ops_340;
 extern const struct vfe_hw_ops vfe_ops_480;
 extern const struct vfe_hw_ops vfe_ops_680;
-extern const struct vfe_hw_ops vfe_ops_gen3;
+extern const struct vfe_hw_ops vfe_ops_690;
+extern const struct vfe_hw_ops vfe_ops_780;
 
 int vfe_get(struct vfe_device *vfe);
 void vfe_put(struct vfe_device *vfe);
@@ -284,7 +388,7 @@ int vfe_enable_v2(struct vfe_line *line);
  * @vfe: VFE Device
  * @wm: Write master id
  */
-void vfe_buf_done(struct vfe_device *vfe, int wm);
+void vfe_buf_done(struct vfe_device *vfe, int wm, struct camss_buf_done_info *buf_done_info);
 
 /*
  * vfe_get_output_v2 - Get vfe output line
@@ -314,5 +418,35 @@ int vfe_enable_output_v2(struct vfe_line *line);
  */
 int vfe_queue_buffer_v2(struct camss_video *vid,
 			struct camss_buffer *buf);
+
+/*
+ * vfe_bus_v3_packer_fmt
+ *
+ * @v4l2_fmt: v4l2 format
+ * @plane: plane for the given format
+ * @align_shift: bit position of the PLAIN16 LSB alignment flag
+ *
+ * Return: the bus packer format for the register
+ */
+u32 vfe_bus_v3_packer_fmt(u32 v4l2_fmt, u8 plane, u8 align_shift);
+
+void vfe_add_output(struct vfe_output *output, u8 pad, u8 comp_group,
+		    unsigned int wm_num, const u8 *bus_client);
+
+void vfe_add_rdi(struct vfe_output *output, u8 bus_client, u8 comp_group);
+
+void vfe_add_yuv(struct vfe_output *output, u8 bus_client_y,
+		 u8 bus_client_c, u8 comp_group);
+
+void vfe_add_ds(struct vfe_output *output, u8 pad, u8 bus_client,
+		u8 comp_group);
+
+void vfe_add_stats(struct vfe_output *output, u8 bus_client, u8 comp_group);
+int vfe_alloc_stats(struct vfe_device *vfe, struct vfe_output *output);
+int vfe_params_prepare(struct camss_video *vid, struct camss_buffer *buf);
+
+void vfe_add_params(struct vfe_output *output, u8 comp_group);
+
+void vfe_set_pix(struct vfe_line *line, int num_outputs);
 
 #endif /* QC_MSM_CAMSS_VFE_H */

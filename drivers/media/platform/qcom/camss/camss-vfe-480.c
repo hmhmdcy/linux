@@ -99,7 +99,7 @@ static void vfe_global_reset(struct vfe_device *vfe)
 static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 {
 	struct v4l2_pix_format_mplane *pix =
-		&line->video_out.active_fmt.fmt.pix_mp;
+		&line->output[0].video_out.active_fmt.fmt.pix_mp;
 
 	wm = RDI_WM(wm); /* map to actual WM used (from wm=RDI index) */
 
@@ -127,7 +127,7 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 		       vfe->base + VFE_BUS_WM_CFG(wm));
 }
 
-static void vfe_wm_stop(struct vfe_device *vfe, u8 wm)
+static void vfe_wm_stop(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 {
 	wm = RDI_WM(wm); /* map to actual WM used (from wm=RDI index) */
 	writel_relaxed(0, vfe->base + VFE_BUS_WM_CFG(wm));
@@ -164,8 +164,8 @@ static void vfe_enable_irq(struct vfe_device *vfe)
 
 	for (i = 0; i < MAX_VFE_OUTPUT_LINES; i++) {
 		/* Enable IRQ for newly added lines, but also keep already running lines's IRQ */
-		if (vfe->line[i].output.state == VFE_OUTPUT_RESERVED ||
-		    vfe->line[i].output.state == VFE_OUTPUT_ON) {
+		if (vfe->line[i].output[0].state == VFE_OUTPUT_RESERVED ||
+		    vfe->line[i].output[0].state == VFE_OUTPUT_ON) {
 			bus_irq_mask |= BUS_IRQ_MASK_0_RDI_RUP(vfe, i)
 					| BUS_IRQ_MASK_0_COMP_DONE(vfe, RDI_COMP_GROUP(i));
 			}
@@ -209,8 +209,11 @@ static irqreturn_t vfe_isr(int irq, void *dev)
 
 		/* Loop through all WMs IRQs */
 		for (i = 0; i < MSM_VFE_IMAGE_MASTERS_NUM; i++) {
-			if (status & BUS_IRQ_MASK_0_COMP_DONE(vfe, RDI_COMP_GROUP(i)))
-				vfe_buf_done(vfe, i);
+			if (status & BUS_IRQ_MASK_0_COMP_DONE(vfe, RDI_COMP_GROUP(i))) {
+				struct camss_buf_done_info buf_done_info = {};
+
+				vfe_buf_done(vfe, i, &buf_done_info);
+			}
 		}
 	}
 
@@ -242,7 +245,7 @@ static void vfe_isr_reg_update(struct vfe_device *vfe, enum vfe_line_id line_id)
 	spin_lock_irqsave(&vfe->output_lock, flags);
 	vfe_reg_update_clear(vfe, line_id);
 
-	output = &vfe->line[line_id].output;
+	output = &vfe->line[line_id].output[0];
 
 	if (output->wait_reg_update) {
 		output->wait_reg_update = 0;
@@ -272,7 +275,7 @@ static void vfe_violation_read(struct vfe_device *vfe)
 	/* nop */
 }
 
-static void vfe_buf_done_480(struct vfe_device *vfe, int port_id)
+static void vfe_buf_done_480(struct vfe_device *vfe, int port_id, struct camss_buf_done_info *info)
 {
 	/* nop */
 }
