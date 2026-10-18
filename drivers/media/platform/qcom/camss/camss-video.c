@@ -237,6 +237,13 @@ static int video_buf_prepare(struct vb2_buffer *vb)
 		vb2_set_plane_payload(vb, i, format->plane_fmt[i].sizeimage);
 	}
 
+	if (video->ops->prepare_dma_buffer) {
+		ret = video->ops->prepare_dma_buffer(video,
+				container_of(vbuf, struct camss_buffer, vb));
+		if (ret)
+			return ret;
+	}
+
 	vbuf->field = V4L2_FIELD_NONE;
 
 	return 0;

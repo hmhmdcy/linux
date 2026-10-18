@@ -24,6 +24,7 @@ qcom-camss-objs += \
 		camss-vfe-4-8.o \
 		camss-vfe-17x.o \
 		camss-vfe-175-camif.o \
+		camss-vfe-175-output.o \
 		camss-vfe-340.o \
 		camss-vfe-480.o \
 		camss-vfe-680.o \

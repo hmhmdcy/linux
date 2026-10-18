@@ -40,6 +40,8 @@ struct camss_video_ops {
 	 * buffer, buf->meta, when it is prepared
 	 */
 	int (*prepare_buffer)(struct camss_video *vid, struct camss_buffer *buf);
+	/* Optional: validate capture DMA layout after its SG mappings are checked. */
+	int (*prepare_dma_buffer)(struct camss_video *vid, struct camss_buffer *buf);
 };
 
 struct camss_video {

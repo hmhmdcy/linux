@@ -16,6 +16,7 @@
 #include "camss.h"
 #include "camss-vfe.h"
 #include "camss-vfe-175-camif.h"
+#include "camss-vfe-175-output.h"
 
 #define VFE_GLOBAL_RESET_CMD			(0x018)
 #define		GLOBAL_RESET_CMD_CORE		BIT(0)
@@ -98,6 +99,8 @@
 
 #define VFE_REG_UPDATE_CMD			(0x4ac)
 #define		REG_UPDATE_RDI(n)		BIT(1 + (n))
+
+#define VFE_17X_COMPOSITE_IRQ_NUM		6
 
 #define VFE_BUS_IRQ_MASK(n)		(0x2044 + (n) * 4)
 #define VFE_BUS_IRQ_CLEAR(n)		(0x2050 + (n) * 4)
@@ -373,12 +376,14 @@ static irqreturn_t vfe_isr(int irq, void *dev)
 			vfe->isr_ops.sof(vfe, i);
 	}
 
-	for (i = 0; i < MSM_VFE_COMPOSITE_IRQ_NUM; i++)
+	for (i = 0; i < VFE_17X_COMPOSITE_IRQ_NUM; i++)
 		if (vfe_bus_status[0] & STATUS0_COMP_BUF_DONE(i))
 			vfe->isr_ops.comp_done(vfe, i);
 
-	for (wm = 0; wm < MSM_VFE_IMAGE_MASTERS_NUM; wm++)
-		if (vfe_bus_status[1] & STATUS1_WM_CLIENT_BUF_DONE(wm))
+	/* PIX planes complete together through their composite group above. */
+	for (wm = 0; wm < vfe->res->line_num; wm++)
+		if (!vfe->line[wm].is_pix &&
+		    (vfe_bus_status[1] & STATUS1_WM_CLIENT_BUF_DONE(wm)))
 			vfe->isr_ops.wm_done(vfe, wm);
 
 	return IRQ_HANDLED;
@@ -614,9 +619,75 @@ const struct vfe_hw_ops vfe_ops_170 = {
 	.vfe_wm_update = vfe_wm_update,
 };
 
-/* SM8150 full IFE: shared RDI transport, matched CAMIF preparation. */
+static int vfe_prepare_dma_175(struct camss_video *video,
+			       struct camss_buffer *buf)
+{
+	struct vfe_output *output = container_of(video, struct vfe_output, video_out);
+
+	if (!output->line->is_pix)
+		return 0;
+
+	return vfe_175_validate_buffer(output, buf);
+}
+
+static const struct camss_video_ops vfe_video_ops_175 = {
+	.queue_buffer = vfe_queue_buffer_v2,
+	.flush_buffers = vfe_flush_buffers,
+	.prepare_dma_buffer = vfe_prepare_dma_175,
+};
+
+static void vfe_subdev_init_175(struct device *dev, struct vfe_device *vfe)
+{
+	vfe_subdev_init(dev, vfe);
+	vfe->video_ops = vfe_video_ops_175;
+	vfe->isr_ops.comp_done = vfe_175_comp_done;
+}
+
+static int vfe_line_prepare_175(struct vfe_line *line)
+{
+	int ret;
+
+	if (line->is_pix) {
+		ret = vfe_175_validate_output(&line->output[0]);
+		if (ret)
+			return ret;
+	}
+
+	return vfe_175_camif_prepare(line);
+}
+
+static void vfe_output_start_175(struct vfe_device *vfe,
+				 struct vfe_output *output)
+{
+	if (output->line->is_pix)
+		vfe_175_full_start(vfe, output);
+	else
+		vfe_wm_start(vfe, output->wm[0].bus_client, output->line);
+}
+
+static void vfe_output_stop_175(struct vfe_device *vfe,
+				struct vfe_output *output)
+{
+	if (output->line->is_pix)
+		vfe_175_full_stop(vfe, output);
+	else
+		vfe_wm_stop(vfe, output->wm[0].bus_client, output->line);
+}
+
+static void vfe_output_update_175(struct vfe_device *vfe,
+				  struct vfe_output *output,
+				  struct camss_buffer *buf)
+{
+	if (output->line->is_pix)
+		vfe_175_full_update(vfe, output, buf);
+	else
+		vfe_wm_update(vfe, output->wm[0].bus_client, buf->addr[0],
+			      output->line);
+}
+
+/* SM8150 full IFE: shared RDI transport, matched CAMIF and FULL DMA. */
 const struct vfe_hw_ops vfe_ops_175 = {
-	.vfe_line_prepare = vfe_175_camif_prepare,
+	.vfe_line_prepare = vfe_line_prepare_175,
 	.global_reset = vfe_global_reset,
 	.hw_version = vfe_hw_version,
 	.isr_read = vfe_isr_read,
@@ -625,12 +696,12 @@ const struct vfe_hw_ops vfe_ops_175 = {
 	.pm_domain_on = vfe_pm_domain_on,
 	.reg_update_clear = vfe_reg_update_clear,
 	.reg_update = vfe_reg_update,
-	.subdev_init = vfe_subdev_init,
+	.subdev_init = vfe_subdev_init_175,
 	.vfe_disable = vfe_disable,
 	.vfe_enable = vfe_enable,
 	.vfe_halt = vfe_halt,
 	.violation_read = vfe_violation_read,
-	.vfe_wm_start = vfe_wm_start,
-	.vfe_wm_stop = vfe_wm_stop,
-	.vfe_wm_update = vfe_wm_update,
+	.vfe_output_start = vfe_output_start_175,
+	.vfe_output_stop = vfe_output_stop_175,
+	.vfe_output_update = vfe_output_update_175,
 };
