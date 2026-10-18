@@ -9,6 +9,7 @@
 #include "camss-vfe.h"
 #include "camss-vfe-175-gamma.h"
 
+#define VFE_175_COLOR_CGC_OVERRIDE	0x034
 #define VFE_175_COLOR_ENABLE		0x048
 #define VFE_175_COLOR_GAMMA		BIT(3)
 #define VFE_175_RGB_LUT_CFG		0x798
@@ -113,7 +114,7 @@ int vfe_175_gamma_configure(struct vfe_device *vfe,
 	/* LUT_CFG banks are R/G/B; DMI memory selectors are R30/G26/B28. */
 	static const u8 selectors[3] = { 30, 26, 28 };
 	u32 packed[3][VFE_175_GAMMA_ENTRIES];
-	u32 lut_cfg, dmi_cfg, dmi_addr, value;
+	u32 lut_cfg, dmi_cfg, dmi_addr, cgc_override, value;
 	unsigned int ch, i;
 	int ret;
 
@@ -126,6 +127,10 @@ int vfe_175_gamma_configure(struct vfe_device *vfe,
 		lut_cfg = readl_relaxed(vfe->base + VFE_175_RGB_LUT_CFG);
 		dmi_cfg = readl_relaxed(vfe->base + VFE_175_DMI_CFG);
 		dmi_addr = readl_relaxed(vfe->base + VFE_175_DMI_ADDR);
+		/* SRAM access also needs the clock when no pixels are arriving yet. */
+		cgc_override = readl_relaxed(vfe->base + VFE_175_COLOR_CGC_OVERRIDE);
+		writel(cgc_override | VFE_175_COLOR_GAMMA,
+		       vfe->base + VFE_175_COLOR_CGC_OVERRIDE);
 		for (ch = 0; ch < 3; ch++) {
 			u32 bank = !(lut_cfg & BIT(ch));
 			u32 select = selectors[ch] + bank;
@@ -146,6 +151,8 @@ int vfe_175_gamma_configure(struct vfe_device *vfe,
 		wmb();
 		writel_relaxed(lut_cfg ^ VFE_175_RGB_LUT_BANKS,
 			       vfe->base + VFE_175_RGB_LUT_CFG);
+		/* Complete the bank switch before returning to the saved clock policy. */
+		writel(cgc_override, vfe->base + VFE_175_COLOR_CGC_OVERRIDE);
 	}
 	/* Publish the bank/configuration before enabling Gamma; no PIX RUP. */
 	wmb();
