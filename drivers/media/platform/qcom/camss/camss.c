@@ -2123,7 +2123,7 @@ static const struct camss_subdev_resources vfe_res_8150[] = {
 			.line_num = 3,
 			.pd_name = "ife0",
 			.has_pd = true,
-			.hw_ops = &vfe_ops_170,
+			.hw_ops = &vfe_ops_175,
 			.formats_rdi = &vfe_formats_rdi_845,
 			.formats_pix = &vfe_formats_rdi_845
 		}
@@ -2152,7 +2152,7 @@ static const struct camss_subdev_resources vfe_res_8150[] = {
 			.line_num = 3,
 			.pd_name = "ife1",
 			.has_pd = true,
-			.hw_ops = &vfe_ops_170,
+			.hw_ops = &vfe_ops_175,
 			.formats_rdi = &vfe_formats_rdi_845,
 			.formats_pix = &vfe_formats_rdi_845
 		}

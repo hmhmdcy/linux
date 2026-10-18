@@ -236,12 +236,14 @@ static inline void vfe_reg_update_clear(struct vfe_device *vfe,
  * Program the pixel pipe outside output_lock, before the write masters and
  * the IPP reg update that latches both.
  */
-static void vfe_line_prepare(struct vfe_line *line)
+static int vfe_line_prepare(struct vfe_line *line)
 {
 	struct v4l2_pix_format_mplane *pix = &line->output[0].video_out.active_fmt.fmt.pix_mp;
 
 	if (line->is_pix && pix->pixelformat == V4L2_PIX_FMT_NV12)
 		vfe_880_setup_pixel_pipe(to_vfe(line), pix->width, pix->height);
+
+	return 0;
 }
 
 static const struct camss_video_ops vfe_video_ops_780 = {

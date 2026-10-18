@@ -15,6 +15,7 @@
 
 #include "camss.h"
 #include "camss-vfe.h"
+#include "camss-vfe-175-camif.h"
 
 #define VFE_GLOBAL_RESET_CMD			(0x018)
 #define		GLOBAL_RESET_CMD_CORE		BIT(0)
@@ -64,6 +65,7 @@
 
 #define VFE_IRQ_STATUS_0				(0x06c)
 #define		STATUS_0_CAMIF_SOF			BIT(0)
+#define		STATUS_0_CAMIF_REG_UPDATE		BIT(4)
 #define		STATUS_0_RDI_REG_UPDATE(n)		BIT((n) + 5)
 #define		STATUS_0_IMAGE_MASTER_PING_PONG(n)	BIT((n) + 8)
 #define		STATUS_0_IMAGE_COMPOSITE_DONE(n)	BIT((n) + 25)
@@ -266,9 +268,15 @@ static void vfe_wm_update(struct vfe_device *vfe, u8 wm, u32 addr,
 	writel_relaxed(stride * pix->height, vfe->base + VFE_BUS_WM_FRAME_INC(wm));
 }
 
+static u32 vfe_reg_update_mask(struct vfe_device *vfe,
+			       enum vfe_line_id line_id)
+{
+	return vfe->line[line_id].is_pix ? BIT(0) : REG_UPDATE_RDI(line_id);
+}
+
 static void vfe_reg_update(struct vfe_device *vfe, enum vfe_line_id line_id)
 {
-	vfe->reg_update |= REG_UPDATE_RDI(line_id);
+	vfe->reg_update |= vfe_reg_update_mask(vfe, line_id);
 
 	/* Enforce ordering between previous reg writes and reg update */
 	wmb();
@@ -282,7 +290,7 @@ static void vfe_reg_update(struct vfe_device *vfe, enum vfe_line_id line_id)
 static inline void vfe_reg_update_clear(struct vfe_device *vfe,
 					enum vfe_line_id line_id)
 {
-	vfe->reg_update &= ~REG_UPDATE_RDI(line_id);
+	vfe->reg_update &= ~vfe_reg_update_mask(vfe, line_id);
 }
 
 static void vfe_enable_irq_common(struct vfe_device *vfe)
@@ -353,13 +361,17 @@ static irqreturn_t vfe_isr(int irq, void *dev)
 	if (status0 & STATUS_0_RESET_ACK)
 		vfe->isr_ops.reset_ack(vfe);
 
-	for (i = VFE_LINE_RDI0; i < vfe->res->line_num; i++)
-		if (status0 & STATUS_0_RDI_REG_UPDATE(i))
-			vfe->isr_ops.reg_update(vfe, i);
+	for (i = VFE_LINE_RDI0; i < vfe->res->line_num; i++) {
+		u32 update = vfe->line[i].is_pix ? STATUS_0_CAMIF_REG_UPDATE :
+						STATUS_0_RDI_REG_UPDATE(i);
+		u32 sof = vfe->line[i].is_pix ? STATUS_0_CAMIF_SOF :
+					     STATUS_1_RDI_SOF(i);
 
-	for (i = VFE_LINE_RDI0; i < vfe->res->line_num; i++)
-		if (status0 & STATUS_1_RDI_SOF(i))
+		if (status0 & update)
+			vfe->isr_ops.reg_update(vfe, i);
+		if (status0 & sof)
 			vfe->isr_ops.sof(vfe, i);
+	}
 
 	for (i = 0; i < MSM_VFE_COMPOSITE_IRQ_NUM; i++)
 		if (vfe_bus_status[0] & STATUS0_COMP_BUF_DONE(i))
@@ -409,6 +421,12 @@ static int vfe_enable(struct vfe_line *line)
 	ret = vfe_get_output_v2(line);
 	if (ret < 0)
 		goto error_get_output;
+
+	if (vfe->res->hw_ops->vfe_line_prepare) {
+		ret = vfe->res->hw_ops->vfe_line_prepare(line);
+		if (ret)
+			goto error_enable_output;
+	}
 
 	ret = vfe_enable_output_v2(line);
 	if (ret < 0)
@@ -579,6 +597,27 @@ static void vfe_subdev_init(struct device *dev, struct vfe_device *vfe)
 }
 
 const struct vfe_hw_ops vfe_ops_170 = {
+	.global_reset = vfe_global_reset,
+	.hw_version = vfe_hw_version,
+	.isr_read = vfe_isr_read,
+	.isr = vfe_isr,
+	.pm_domain_off = vfe_pm_domain_off,
+	.pm_domain_on = vfe_pm_domain_on,
+	.reg_update_clear = vfe_reg_update_clear,
+	.reg_update = vfe_reg_update,
+	.subdev_init = vfe_subdev_init,
+	.vfe_disable = vfe_disable,
+	.vfe_enable = vfe_enable,
+	.vfe_halt = vfe_halt,
+	.violation_read = vfe_violation_read,
+	.vfe_wm_start = vfe_wm_start,
+	.vfe_wm_stop = vfe_wm_stop,
+	.vfe_wm_update = vfe_wm_update,
+};
+
+/* SM8150 full IFE: shared RDI transport, matched CAMIF preparation. */
+const struct vfe_hw_ops vfe_ops_175 = {
+	.vfe_line_prepare = vfe_175_camif_prepare,
 	.global_reset = vfe_global_reset,
 	.hw_version = vfe_hw_version,
 	.isr_read = vfe_isr_read,

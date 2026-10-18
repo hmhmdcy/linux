@@ -205,7 +205,7 @@ struct vfe_hw_ops {
 	 * reserved, outside output_lock. Runs before vfe_wm_start() and the
 	 * reg update that latches it.
 	 */
-	void (*vfe_line_prepare)(struct vfe_line *line);
+	int (*vfe_line_prepare)(struct vfe_line *line);
 
 	/*
 	 * Optional: the parameters blocks the pixel line accepts, indexed by
@@ -349,6 +349,7 @@ extern const struct vfe_hw_ops vfe_ops_4_1;
 extern const struct vfe_hw_ops vfe_ops_4_7;
 extern const struct vfe_hw_ops vfe_ops_4_8;
 extern const struct vfe_hw_ops vfe_ops_170;
+extern const struct vfe_hw_ops vfe_ops_175;
 extern const struct vfe_hw_ops vfe_ops_340;
 extern const struct vfe_hw_ops vfe_ops_480;
 extern const struct vfe_hw_ops vfe_ops_680;

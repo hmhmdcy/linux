@@ -1044,8 +1044,11 @@ int vfe_enable_v2(struct vfe_line *line)
 	if (ret < 0)
 		goto error_get_output;
 
-	if (ops->vfe_line_prepare)
-		ops->vfe_line_prepare(line);
+	if (ops->vfe_line_prepare) {
+		ret = ops->vfe_line_prepare(line);
+		if (ret)
+			goto error_enable_output;
+	}
 
 	/* queued parameters override the defaults the line starts with */
 	if (line->is_pix)
@@ -2502,7 +2505,8 @@ static int vfe_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 	struct vfe_device *vfe = to_vfe(line);
 
 	if (vfe->camss->res->version != CAMSS_8150 ||
-	    vfe->res->hw_ops != &vfe_ops_170 ||
+	    (vfe->res->hw_ops != &vfe_ops_170 &&
+	     vfe->res->hw_ops != &vfe_ops_175) ||
 	    sub->type != V4L2_EVENT_FRAME_SYNC || sub->id)
 		return -EINVAL;
 
@@ -2733,7 +2737,8 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		sd->internal_ops = &vfe_v4l2_internal_ops;
 		sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 		if (vfe->camss->res->version == CAMSS_8150 &&
-		    vfe->res->hw_ops == &vfe_ops_170)
+		    (vfe->res->hw_ops == &vfe_ops_170 ||
+		     vfe->res->hw_ops == &vfe_ops_175))
 			sd->flags |= V4L2_SUBDEV_FL_HAS_EVENTS;
 		if (vfe->line[i].is_pix)
 			snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d_%s",
