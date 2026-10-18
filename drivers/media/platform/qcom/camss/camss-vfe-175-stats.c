@@ -11,7 +11,7 @@
 #include "camss-vfe-175-stats.h"
 
 #define VFE_175_STATS_ENABLE             0x044
-#define VFE_175_BHIST_ENABLE             BIT(5)
+#define VFE_175_BHIST_ENABLE             BIT(4)
 #define VFE_175_STATS_CONFIG             0xaac
 #define VFE_175_BHIST_UNIFORM            BIT(4)
 #define VFE_175_BHIST_CHANNEL            GENMASK(23, 21)
