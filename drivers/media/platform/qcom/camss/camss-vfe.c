@@ -1730,6 +1730,23 @@ static int vfe_set_stream(struct v4l2_subdev *sd, int enable)
 	return ret;
 }
 
+/* Sparse PIX outputs retain their shared pad numbers, but not formats. */
+static bool vfe_pad_supported(const struct vfe_line *line, unsigned int pad)
+{
+	unsigned int o;
+
+	if (pad >= line->num_pads)
+		return false;
+	if (pad == MSM_VFE_PAD_SINK || pad == MSM_VFE_PAD_SRC)
+		return true;
+
+	for (o = 1; o < line->num_outputs; o++)
+		if (line->output[o].pad == pad)
+			return true;
+
+	return false;
+}
+
 /*
  * __vfe_get_format - Get pointer to format structure
  * @line: VFE line
@@ -1745,6 +1762,9 @@ __vfe_get_format(struct vfe_line *line,
 		 unsigned int pad,
 		 enum v4l2_subdev_format_whence which)
 {
+	if (!vfe_pad_supported(line, pad))
+		return NULL;
+
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
 		return v4l2_subdev_state_get_format(sd_state, pad);
 
@@ -2003,6 +2023,9 @@ static int vfe_enum_mbus_code(struct v4l2_subdev *sd,
 {
 	struct vfe_line *line = v4l2_get_subdevdata(sd);
 
+	if (!vfe_pad_supported(line, code->pad))
+		return -EINVAL;
+
 	switch (code->pad) {
 	case MSM_VFE_PAD_SRC_DS4:
 	case MSM_VFE_PAD_SRC_DS16:
@@ -2053,6 +2076,9 @@ static int vfe_enum_frame_size(struct v4l2_subdev *sd,
 {
 	struct vfe_line *line = v4l2_get_subdevdata(sd);
 	struct v4l2_mbus_framefmt format;
+
+	if (!vfe_pad_supported(line, fse->pad))
+		return -EINVAL;
 
 	/* Metadata has no frame size */
 	if (fse->pad == MSM_VFE_PAD_SRC_STATS ||
