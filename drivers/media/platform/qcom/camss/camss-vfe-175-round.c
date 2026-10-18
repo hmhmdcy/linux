@@ -8,6 +8,8 @@
 #include "camss-vfe.h"
 #include "camss-vfe-175-round.h"
 
+#define VFE_175_FRAME_ENABLE		0x04c
+#define VFE_175_FRAME_FULL_POST_PROCESS	BIT(4)
 #define VFE_175_FULL_Y_ENABLE		0xe0c
 #define VFE_175_FULL_C_ENABLE		0xe2c
 #define VFE_175_FULL_ROUND_ENABLE		BIT(10)
@@ -68,6 +70,11 @@ int vfe_175_round_configure(struct vfe_device *vfe,
 	/* Y/C have distinct enable registers. Preserve crop/scaler ownership. */
 	vfe_175_round_write(vfe, VFE_175_FULL_Y_ENABLE, VFE_175_FULL_DEPTH_ENABLE, enabled);
 	vfe_175_round_write(vfe, VFE_175_FULL_C_ENABLE, VFE_175_FULL_DEPTH_ENABLE, enabled);
+	/* Route FULL through crop/round/clamp, even for the uncropped image. */
+	wmb();
+	vfe_175_round_write(vfe, VFE_175_FRAME_ENABLE,
+			    VFE_175_FRAME_FULL_POST_PROCESS,
+			    config->enabled ? VFE_175_FRAME_FULL_POST_PROCESS : 0);
 
 	return 0;
 }
@@ -94,6 +101,8 @@ void vfe_175_round_stop(struct vfe_device *vfe)
 {
 	if (!vfe_175_round_supported(vfe))
 		return;
+	vfe_175_round_write(vfe, VFE_175_FRAME_ENABLE,
+			    VFE_175_FRAME_FULL_POST_PROCESS, 0);
 	vfe_175_round_write(vfe, VFE_175_FULL_Y_ENABLE, VFE_175_FULL_DEPTH_ENABLE, 0);
 	vfe_175_round_write(vfe, VFE_175_FULL_C_ENABLE, VFE_175_FULL_DEPTH_ENABLE, 0);
 }
