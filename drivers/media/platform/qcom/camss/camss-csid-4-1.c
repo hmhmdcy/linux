@@ -44,7 +44,7 @@
 #define CAMSS_CSID_TG_DT_n_CGG_1(n)	(0x0b0 + 0xc * (n))
 #define CAMSS_CSID_TG_DT_n_CGG_2(n)	(0x0b4 + 0xc * (n))
 
-static void csid_configure_stream(struct csid_device *csid, u8 enable)
+static int csid_configure_stream(struct csid_device *csid, u8 enable)
 {
 	struct csid_testgen_config *tg = &csid->testgen;
 	u32 val;
@@ -128,6 +128,8 @@ static void csid_configure_stream(struct csid_device *csid, u8 enable)
 			writel_relaxed(val, csid->base + CAMSS_CSID_TG_CTRL);
 		}
 	}
+
+	return 0;
 }
 
 static int csid_configure_testgen_pattern(struct csid_device *csid, s32 val)

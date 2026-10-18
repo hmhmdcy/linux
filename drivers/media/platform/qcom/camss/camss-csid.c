@@ -779,9 +779,7 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
 			return -ENOLINK;
 	}
 
-	csid->res->hw_ops->configure_stream(csid, enable);
-
-	return 0;
+	return csid->res->hw_ops->configure_stream(csid, enable);
 }
 
 /*
@@ -1301,6 +1299,19 @@ static int csid_link_setup(struct media_entity *entity,
 		struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
 		struct csid_device *csid = v4l2_get_subdevdata(sd);
 		struct device *dev = csid->camss->dev;
+
+		/* Gen2 full CSIDs have three RDIs and a distinct pixel path. */
+		if (csid->res->has_ipp && (flags & MEDIA_LNK_FL_ENABLED)) {
+			struct vfe_line *line;
+			bool ipp = !csid_is_lite(csid) &&
+				   local->index == MSM_CSID_PAD_FIRST_SRC + 3;
+
+			if (!is_media_entity_v4l2_subdev(remote->entity))
+				return -EINVAL;
+			line = v4l2_get_subdevdata(media_entity_to_v4l2_subdev(remote->entity));
+			if (ipp != line->is_pix)
+				return -EINVAL;
+		}
 
 		if (flags & MEDIA_LNK_FL_ENABLED)
 			csid->phy.en_vc |= BIT(local->index - 1);

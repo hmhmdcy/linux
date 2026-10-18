@@ -128,7 +128,7 @@ static void __csid_configure_stream(struct csid_device *csid, u8 enable, u8 port
 	writel_relaxed(enable, csid->base + CSID_CTRL(iface));
 }
 
-static void csid_configure_streams(struct csid_device *csid, u8 enable)
+static int csid_configure_streams(struct csid_device *csid, u8 enable)
 {
 	int i;
 
@@ -138,6 +138,8 @@ static void csid_configure_streams(struct csid_device *csid, u8 enable)
 		if (csid->phy.en_vc & BIT(i))
 			__csid_configure_stream(csid, !!enable, i, 0);
 	}
+
+	return 0;
 }
 
 static int csid_reset(struct csid_device *csid)

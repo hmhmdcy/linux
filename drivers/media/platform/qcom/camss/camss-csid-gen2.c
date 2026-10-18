@@ -9,6 +9,7 @@
 #include <linux/completion.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
 
@@ -119,6 +120,33 @@
 							+ 0x100 * (rdi))
 #define CSID_RDI_RPP_LINE_DROP_PERIOD(rdi)		((csid_is_lite(csid) ? 0x230 : 0x330)\
 							+ 0x100 * (rdi))
+
+/* CSID175 full IPP, verified against the SM8150 OEM descriptor. */
+#define CSID_IPP_IRQ_STATUS		0x30
+#define CSID_IPP_IRQ_MASK		0x34
+#define CSID_IPP_IRQ_CLEAR		0x38
+#define CSID_IPP_CFG0			0x200
+#define	IPP_CFG0_FORMAT_MEASURE_EN	BIT(0)
+#define	IPP_CFG0_TIMESTAMP_EN		BIT(1)
+#define	IPP_CFG0_PIXEL_STORE_EN		BIT(7)
+#define	IPP_CFG0_DECODE_FORMAT		12
+#define	IPP_CFG0_DATA_TYPE		16
+#define	IPP_CFG0_VIRTUAL_CHANNEL		22
+#define	IPP_CFG0_ENABLE			BIT(31)
+#define CSID_IPP_CFG1			0x204
+#define CSID_IPP_CTRL			0x208
+#define CSID_IPP_FRM_DROP_PATTERN		0x20c
+#define CSID_IPP_FRM_DROP_PERIOD		0x210
+#define CSID_IPP_IRQ_SUBSAMPLE_PATTERN	0x214
+#define CSID_IPP_IRQ_SUBSAMPLE_PERIOD	0x218
+#define CSID_IPP_PIX_DROP_PATTERN		0x224
+#define CSID_IPP_PIX_DROP_PERIOD		0x228
+#define CSID_IPP_LINE_DROP_PATTERN	0x22c
+#define CSID_IPP_LINE_DROP_PERIOD		0x230
+#define CSID_IPP_STATUS			0x254
+#define	IPP_STATUS_HALTED		BIT(0)
+#define	IPP_IRQ_FIFO_OVERFLOW		BIT(2)
+#define CSID_GEN2_IPP_PORT		3
 
 #define CSID_TPG_CTRL		0x600
 #define		TPG_CTRL_TEST_EN		0
@@ -319,25 +347,143 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	writel_relaxed(val, csid->base + CSID_RDI_CTRL(port));
 
 	val = readl_relaxed(csid->base + CSID_RDI_CFG0(port));
-	val |=  enable << RDI_CFG0_ENABLE;
+	val |= (u32)enable << RDI_CFG0_ENABLE;
 	writel_relaxed(val, csid->base + CSID_RDI_CFG0(port));
 }
 
-static void csid_configure_stream(struct csid_device *csid, u8 enable)
+static bool csid_gen2_port_is_ipp(struct csid_device *csid, u8 port)
+{
+	return csid->res->has_ipp && !csid_is_lite(csid) &&
+	       port == CSID_GEN2_IPP_PORT;
+}
+
+static int csid_gen2_validate_ipp(struct csid_device *csid, u8 port, u8 vc)
+{
+	const struct v4l2_mbus_framefmt *input;
+	const struct csid_format_info *format;
+
+	if (!csid_gen2_port_is_ipp(csid, port) || vc > 31)
+		return -EINVAL;
+	input = &csid->fmt[MSM_CSID_PAD_FIRST_SRC + port];
+	format = csid_get_fmt_entry(csid->res->formats->formats,
+				    csid->res->formats->nformats, input->code);
+	/* RAW6..RAW16: unpack pixels, never feed payload-only bytes to PIX. */
+	if (format->code != input->code || format->data_type < 0x28 ||
+	    format->data_type > 0x2e ||
+	    format->decode_format == DECODE_FORMAT_PAYLOAD_ONLY)
+		return -EINVAL;
+
+	return 0;
+}
+
+static int csid_gen2_configure_ipp(struct csid_device *csid, u8 port, u8 vc)
+{
+	const struct v4l2_mbus_framefmt *input;
+	const struct csid_format_info *format;
+	u32 value;
+	int ret;
+
+	ret = csid_gen2_validate_ipp(csid, port, vc);
+	if (ret)
+		return ret;
+
+	input = &csid->fmt[MSM_CSID_PAD_FIRST_SRC + port];
+	format = csid_get_fmt_entry(csid->res->formats->formats,
+				    csid->res->formats->nformats, input->code);
+	writel(0, csid->base + CSID_IPP_CTRL);
+	writel(0, csid->base + CSID_IPP_IRQ_MASK);
+	writel(0x7fff, csid->base + CSID_IPP_IRQ_CLEAR);
+	writel(1, csid->base + CSID_IRQ_CMD);
+
+	value = IPP_CFG0_FORMAT_MEASURE_EN | IPP_CFG0_TIMESTAMP_EN |
+		IPP_CFG0_PIXEL_STORE_EN |
+		format->decode_format << IPP_CFG0_DECODE_FORMAT |
+		format->data_type << IPP_CFG0_DATA_TYPE |
+		vc << IPP_CFG0_VIRTUAL_CHANNEL;
+	/* The IPP has CID slot zero; port 3 does not mean DT_ID 3. */
+	writel(value, csid->base + CSID_IPP_CFG0);
+	writel(2, csid->base + CSID_IPP_CFG1);
+	writel(1, csid->base + CSID_IPP_FRM_DROP_PERIOD);
+	writel(0, csid->base + CSID_IPP_FRM_DROP_PATTERN);
+	writel(1, csid->base + CSID_IPP_IRQ_SUBSAMPLE_PERIOD);
+	writel(0, csid->base + CSID_IPP_IRQ_SUBSAMPLE_PATTERN);
+	writel(1, csid->base + CSID_IPP_PIX_DROP_PERIOD);
+	writel(0, csid->base + CSID_IPP_PIX_DROP_PATTERN);
+	writel(1, csid->base + CSID_IPP_LINE_DROP_PERIOD);
+	writel(0, csid->base + CSID_IPP_LINE_DROP_PATTERN);
+	writel(value | IPP_CFG0_ENABLE, csid->base + CSID_IPP_CFG0);
+	writel(IPP_IRQ_FIFO_OVERFLOW, csid->base + CSID_IPP_IRQ_MASK);
+
+	return 0;
+}
+
+static int csid_gen2_stop_ipp(struct csid_device *csid)
+{
+	u32 value;
+	int ret;
+
+	if (!(readl(csid->base + CSID_IPP_CFG0) & IPP_CFG0_ENABLE))
+		return 0;
+
+	writel(0, csid->base + CSID_IPP_IRQ_MASK);
+	/* Internal halt at a frame boundary, then wait for the real status. */
+	writel(0, csid->base + CSID_IPP_CTRL);
+	ret = readl_poll_timeout(csid->base + CSID_IPP_STATUS, value,
+				 value & IPP_STATUS_HALTED, 10,
+				 CSID_RESET_TIMEOUT_MS * 1000);
+	if (ret)
+		return ret;
+
+	value = readl(csid->base + CSID_IPP_CFG0);
+	writel(value & ~IPP_CFG0_ENABLE, csid->base + CSID_IPP_CFG0);
+
+	return 0;
+}
+
+static int csid_configure_stream(struct csid_device *csid, u8 enable)
 {
 	struct csid_testgen_config *tg = &csid->testgen;
-	u8 i;
+	int ret;
+	u8 i, first = MSM_CSID_MAX_SRC_STREAMS;
 
-	/* Loop through all enabled ports and configure a stream for each */
-	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++)
-		if (csid->phy.en_vc & BIT(i)) {
-			if (tg->enabled)
-				__csid_configure_testgen(csid, enable, i, 0);
+	if (enable && csid_gen2_port_is_ipp(csid, CSID_GEN2_IPP_PORT) &&
+	    csid->phy.en_vc & BIT(CSID_GEN2_IPP_PORT)) {
+		ret = csid_gen2_validate_ipp(csid, CSID_GEN2_IPP_PORT, 0);
+		if (ret)
+			return ret;
+	}
 
+	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++) {
+		if (!(csid->phy.en_vc & BIT(i)))
+			continue;
+
+		if (first == MSM_CSID_MAX_SRC_STREAMS)
+			first = i;
+
+		if (csid_gen2_port_is_ipp(csid, i)) {
+			if (!enable) {
+				ret = csid_gen2_stop_ipp(csid);
+				if (ret)
+					return ret;
+				continue;
+			}
+			ret = csid_gen2_configure_ipp(csid, i, 0);
+			if (ret)
+				return ret;
+			__csid_configure_rx(csid, &csid->phy, 0);
+			writel(1, csid->base + CSID_IPP_CTRL);
+		} else {
 			__csid_configure_rdi_stream(csid, enable, i, 0);
 			__csid_configure_rx(csid, &csid->phy, 0);
 			__csid_ctrl_rdi(csid, enable, i);
 		}
+	}
+
+	/* Start the source after paths are armed; stop it after paths halt. */
+	if (tg->enabled && first < MSM_CSID_MAX_SRC_STREAMS)
+		__csid_configure_testgen(csid, enable, first, 0);
+
+	return 0;
 }
 
 static int csid_configure_testgen_pattern(struct csid_device *csid, s32 val)
@@ -372,8 +518,16 @@ static irqreturn_t csid_isr(int irq, void *dev)
 	/* Read and clear IRQ status for each enabled RDI channel */
 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++)
 		if (csid->phy.en_vc & BIT(i)) {
-			val = readl_relaxed(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i));
-			writel_relaxed(val, csid->base + CSID_CSI2_RDIN_IRQ_CLEAR(i));
+			if (csid_gen2_port_is_ipp(csid, i)) {
+				val = readl_relaxed(csid->base + CSID_IPP_IRQ_STATUS);
+				writel_relaxed(val, csid->base + CSID_IPP_IRQ_CLEAR);
+				if (val & IPP_IRQ_FIFO_OVERFLOW)
+					dev_err_ratelimited(csid->camss->dev,
+							    "CSID%u IPP FIFO overflow\n", csid->id);
+			} else {
+				val = readl_relaxed(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i));
+				writel_relaxed(val, csid->base + CSID_CSI2_RDIN_IRQ_CLEAR(i));
+			}
 		}
 
 	val = 1 << IRQ_CMD_CLEAR;

@@ -86,7 +86,7 @@ struct csid_hw_ops {
 	 * configure_stream - Configures and starts CSID input stream
 	 * @csid: CSID device
 	 */
-	void (*configure_stream)(struct csid_device *csid, u8 enable);
+	int (*configure_stream)(struct csid_device *csid, u8 enable);
 
 	/*
 	 * configure_testgen_pattern - Validates and configures output pattern mode
@@ -148,6 +148,7 @@ struct csid_hw_ops {
 
 struct csid_subdev_resources {
 	bool is_lite;
+	bool has_ipp; /* gen2 pixel input path, separate from RDI3 */
 	const struct csid_hw_ops *hw_ops;
 	const struct parent_dev_ops *parent_dev_ops;
 	const struct csid_formats *formats;

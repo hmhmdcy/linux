@@ -274,7 +274,7 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 
 static int csid_reset(struct csid_device *csid);
 
-static void csid_configure_stream(struct csid_device *csid, u8 enable)
+static int csid_configure_stream(struct csid_device *csid, u8 enable)
 {
 	u8 i;
 
@@ -294,6 +294,8 @@ static void csid_configure_stream(struct csid_device *csid, u8 enable)
 				__csid_ctrl_rdi(csid, enable, i);
 			}
 		}
+
+	return 0;
 }
 
 static int csid_configure_testgen_pattern(struct csid_device *csid, s32 val)

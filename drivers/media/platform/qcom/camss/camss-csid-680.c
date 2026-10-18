@@ -296,7 +296,7 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	writel(val, csid->base + CSID_RDI_CFG0(port));
 }
 
-static void csid_configure_stream(struct csid_device *csid, u8 enable)
+static int csid_configure_stream(struct csid_device *csid, u8 enable)
 {
 	int i;
 
@@ -310,6 +310,8 @@ static void csid_configure_stream(struct csid_device *csid, u8 enable)
 			__csid_ctrl_rdi(csid, enable, i);
 		}
 	}
+
+	return 0;
 }
 
 /*
