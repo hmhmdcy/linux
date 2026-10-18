@@ -142,10 +142,12 @@ int vfe_175_gamma_configure(struct vfe_device *vfe,
 		/* Restore shared DMI state before publishing the newly filled banks. */
 		writel(dmi_cfg, vfe->base + VFE_175_DMI_CFG);
 		writel(dmi_addr, vfe->base + VFE_175_DMI_ADDR);
+		/* Complete all LUT writes before changing the bank selection. */
 		wmb();
 		writel_relaxed(lut_cfg ^ VFE_175_RGB_LUT_BANKS,
 			       vfe->base + VFE_175_RGB_LUT_CFG);
 	}
+	/* Publish the bank/configuration before enabling Gamma; no PIX RUP. */
 	wmb();
 	value = readl_relaxed(vfe->base + VFE_175_COLOR_ENABLE);
 	value &= ~VFE_175_COLOR_GAMMA;

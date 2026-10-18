@@ -62,6 +62,7 @@ int vfe_175_round_configure(struct vfe_device *vfe,
 			    FIELD_PREP(VFE_175_ROUND_CLAMP_MAX, config->c_max));
 	vfe_175_round_write(vfe, VFE_175_FULL_C_ROUND, VFE_175_ROUND_FIELDS,
 			    round | VFE_175_ROUND_INTERLEAVED);
+	/* Make both output configurations visible before setting their enables. */
 	wmb();
 	enabled = config->enabled ? VFE_175_FULL_DEPTH_ENABLE : 0;
 	/* Y/C have distinct enable registers. Preserve crop/scaler ownership. */
