@@ -19,7 +19,8 @@ struct vfe_175_pixel_state {
 };
 
 extern const struct v4l2_isp_params_block_type_info vfe_175_params_info[2];
-void vfe_175_pixel_prepare(struct vfe_line *line);
+int vfe_175_pixel_prepare(struct vfe_line *line);
+void vfe_175_pixel_stop(struct vfe_device *vfe);
 void vfe_175_params_apply(struct vfe_device *vfe, struct vfe_line *line,
 			  const struct v4l2_isp_buffer *params);
 

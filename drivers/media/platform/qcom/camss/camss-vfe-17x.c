@@ -445,6 +445,8 @@ static int vfe_enable(struct vfe_line *line)
 	return 0;
 
 error_enable_output:
+	if (line->is_pix)
+		vfe_175_pixel_stop(vfe);
 	vfe_put_output(line);
 
 error_get_output:
@@ -661,9 +663,7 @@ static int vfe_line_prepare_175(struct vfe_line *line)
 	ret = vfe_175_camif_prepare(line);
 	if (ret)
 		return ret;
-	vfe_175_pixel_prepare(line);
-
-	return 0;
+	return vfe_175_pixel_prepare(line);
 }
 
 static void vfe_output_start_175(struct vfe_device *vfe,
@@ -678,9 +678,11 @@ static void vfe_output_start_175(struct vfe_device *vfe,
 static void vfe_output_stop_175(struct vfe_device *vfe,
 				struct vfe_output *output)
 {
-	if (output->line->is_pix)
+	if (output->line->is_pix) {
 		vfe_175_full_stop(vfe, output);
-	else
+		if (output->pad == MSM_VFE_PAD_SRC)
+			vfe_175_pixel_stop(vfe);
+	} else
 		vfe_wm_stop(vfe, output->wm[0].bus_client, output->line);
 }
 
