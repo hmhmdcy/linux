@@ -50,6 +50,12 @@
 
 &cci0_i2c0 {
 	status = "okay";
+	cam_main_lens: lens@72 {
+		compatible = "onnn,lc898219xi";
+		reg = <0x72>;
+		vdd-supply = <&cam_main_vaf>;
+	};
+
 	cam_main: camera@10 {
 		compatible = "samsung,s5kgw1";
 		reg = <0x10>;
@@ -58,7 +64,7 @@
 		vdda-supply = <&cam_main_vana>;
 		vddd-supply = <&cam_main_vdig>;
 		vddio-supply = <&vreg_l1c_1p8>;
-		afvdd-supply = <&cam_main_vaf>;
+		lens-focus = <&cam_main_lens>;
 		clocks = <&camcc CAM_CC_MCLK0_CLK>;
 		assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
 		assigned-clock-rates = <19200000>;
