@@ -12,6 +12,8 @@
 #include "camss-vfe-175-cst.h"
 #include "camss-vfe-175-round.h"
 #include "camss-vfe-175-gamma.h"
+#include "camss-vfe-175-demux.h"
+#include "camss-vfe-175-mnds.h"
 
 #define VFE_175_WB_GAIN_0		0x6fc
 #define VFE_175_WB_GAIN_1		0x700
@@ -107,6 +109,8 @@ int vfe_175_pixel_prepare(struct vfe_line *line)
 	struct vfe_device *vfe = to_vfe(line);
 	struct vfe_175_cst_config cst;
 	struct vfe_175_gamma_config gamma;
+	struct vfe_175_demux_config demux;
+	struct vfe_175_mnds_config mnds;
 	int ret;
 
 	if (!line->is_pix)
@@ -120,13 +124,25 @@ int vfe_175_pixel_prepare(struct vfe_line *line)
 					&gamma);
 	if (ret)
 		return ret;
-	ret = vfe_175_demosaic_prepare(line);
+	ret = vfe_175_demux_from_code(line->fmt[MSM_VFE_PAD_SINK].code, &demux);
 	if (ret)
 		return ret;
+	ret = vfe_175_mnds_from_line(line, &mnds);
+	if (ret)
+		return ret;
+	ret = vfe_175_demux_configure(vfe, &demux);
+	if (ret)
+		return ret;
+	ret = vfe_175_demosaic_prepare(line);
+	if (ret)
+		goto error;
 	ret = vfe_175_gamma_configure(vfe, &gamma);
 	if (ret)
 		goto error;
 	ret = vfe_175_cst_configure(vfe, &cst);
+	if (ret)
+		goto error;
+	ret = vfe_175_mnds_configure(vfe, &mnds);
 	if (ret)
 		goto error;
 	ret = vfe_175_round_prepare(line);
@@ -151,9 +167,11 @@ error:
 void vfe_175_pixel_stop(struct vfe_device *vfe)
 {
 	vfe_175_round_stop(vfe);
+	vfe_175_mnds_stop(vfe);
 	vfe_175_gamma_stop(vfe);
 	vfe_175_cst_stop(vfe);
 	vfe_175_demosaic_stop(vfe);
+	vfe_175_demux_stop(vfe);
 }
 
 void vfe_175_params_apply(struct vfe_device *vfe, struct vfe_line *line,

@@ -32,7 +32,7 @@
 #define VFE_175_RAW_CROP_LAST                GENMASK(13, 0)
 
 /* The full IFE accepts decoded Bayer samples, not the packed RDI payload. */
-static int vfe_175_bayer_pattern(u32 code)
+int vfe_175_bayer_pattern(u32 code)
 {
 	switch (code) {
 	case MEDIA_BUS_FMT_SRGGB8_1X8:
