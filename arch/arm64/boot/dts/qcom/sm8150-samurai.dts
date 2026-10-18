@@ -1079,3 +1079,5 @@
 	memory-region = <&camss_iova_resv>;
 	memory-region-names = "ife-iova";
 };
+
+#include "s5k3m5-samurai.dtsi"
