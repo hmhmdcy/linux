@@ -432,6 +432,10 @@ static int vfe_enable(struct vfe_line *line)
 			goto error_enable_output;
 	}
 
+	/* Queued PIX parameters must override defaults before the first frame. */
+	if (line->is_pix)
+		vfe_params_apply_queued(vfe, line);
+
 	ret = vfe_enable_output_v2(line);
 	if (ret < 0)
 		goto error_enable_output;
@@ -634,6 +638,7 @@ static const struct camss_video_ops vfe_video_ops_175 = {
 	.queue_buffer = vfe_queue_buffer_v2,
 	.flush_buffers = vfe_flush_buffers,
 	.prepare_dma_buffer = vfe_prepare_dma_175,
+	.prepare_buffer = vfe_params_prepare,
 };
 
 static void vfe_subdev_init_175(struct device *dev, struct vfe_device *vfe)
@@ -653,7 +658,12 @@ static int vfe_line_prepare_175(struct vfe_line *line)
 			return ret;
 	}
 
-	return vfe_175_camif_prepare(line);
+	ret = vfe_175_camif_prepare(line);
+	if (ret)
+		return ret;
+	vfe_175_pixel_prepare(line);
+
+	return 0;
 }
 
 static void vfe_output_start_175(struct vfe_device *vfe,
@@ -687,6 +697,9 @@ static void vfe_output_update_175(struct vfe_device *vfe,
 
 /* SM8150 full IFE: shared RDI transport, matched CAMIF and FULL DMA. */
 const struct vfe_hw_ops vfe_ops_175 = {
+	.params_info = vfe_175_params_info,
+	.params_num_types = ARRAY_SIZE(vfe_175_params_info),
+	.vfe_params_apply = vfe_175_params_apply,
 	.vfe_line_prepare = vfe_line_prepare_175,
 	.global_reset = vfe_global_reset,
 	.hw_version = vfe_hw_version,

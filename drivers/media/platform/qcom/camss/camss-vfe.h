@@ -19,6 +19,7 @@
 
 #include "camss-video.h"
 #include "camss-vfe-gen1.h"
+#include "camss-vfe-175-pixel.h"
 
 #define MSM_VFE_PAD_SINK 0
 #define MSM_VFE_PAD_SRC 1
@@ -248,6 +249,7 @@ struct vfe_subdev_resources {
 };
 
 struct vfe_device {
+	struct vfe_175_pixel_state pixel175;
 	struct camss *camss;
 	u8 id;
 	void __iomem *base;
@@ -383,6 +385,7 @@ u32 vfe_hw_version(struct vfe_device *vfe);
  * Return 0 on success or a negative error code otherwise
  */
 int vfe_enable_v2(struct vfe_line *line);
+void vfe_params_apply_queued(struct vfe_device *vfe, struct vfe_line *line);
 
 /*
  * vfe_buf_done - Process write master done interrupt

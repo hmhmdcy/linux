@@ -745,7 +745,7 @@ static struct camss_buffer *vfe_params_apply_next(struct vfe_device *vfe,
 }
 
 /* Line start: apply every queued parameters buffer, oldest first */
-static void vfe_params_apply_queued(struct vfe_device *vfe,
+void vfe_params_apply_queued(struct vfe_device *vfe,
 				    struct vfe_line *line)
 {
 	struct camss_buffer *buf;
