@@ -202,16 +202,22 @@
 static void __csid_configure_rx(struct csid_device *csid,
 				struct csid_phy_config *phy, int vc)
 {
-	u8 lane_cnt = csid->phy.lane_cnt;
-	int val;
+	u8 lane_cnt = phy->lane_cnt;
+	u32 val;
 
-	if (!lane_cnt)
-		lane_cnt = 4;
+	if (csid->testgen.enabled) {
+		/* The internal source emits four D-PHY lanes, not C-PHY trios. */
+		val = 3 << CSI2_RX_CFG0_NUM_ACTIVE_LANES;
+		val |= 0x3210 << CSI2_RX_CFG0_DL0_INPUT_SEL;
+	} else {
+		if (!lane_cnt)
+			lane_cnt = 4;
 
-	val = (lane_cnt - 1) << CSI2_RX_CFG0_NUM_ACTIVE_LANES;
-	val |= phy->lane_assign << CSI2_RX_CFG0_DL0_INPUT_SEL;
-	val |= phy->csiphy_id << CSI2_RX_CFG0_PHY_NUM_SEL;
-	val |= phy->is_cphy << CSI2_RX_CFG0_PHY_TYPE_SEL;
+		val = (lane_cnt - 1) << CSI2_RX_CFG0_NUM_ACTIVE_LANES;
+		val |= phy->lane_assign << CSI2_RX_CFG0_DL0_INPUT_SEL;
+		val |= phy->csiphy_id << CSI2_RX_CFG0_PHY_NUM_SEL;
+		val |= phy->is_cphy << CSI2_RX_CFG0_PHY_TYPE_SEL;
+	}
 	writel_relaxed(val, csid->base + CSID_CSI2_RX_CFG0);
 
 	val = 1 << CSI2_RX_CFG1_PACKET_ECC_CORRECTION_EN;
@@ -239,11 +245,7 @@ static void __csid_configure_testgen(struct csid_device *csid, u8 enable, u8 por
 	const struct csid_format_info *format = csid_get_fmt_entry(csid->res->formats->formats,
 								   csid->res->formats->nformats,
 								   input_format->code);
-	u8 lane_cnt = csid->phy.lane_cnt;
 	u32 val;
-
-	if (!lane_cnt)
-		lane_cnt = 4;
 
 	/* configure one DT, infinite frames */
 	val = vc << TPG_VC_CFG0_VC_NUM;
@@ -276,7 +278,7 @@ static void __csid_configure_testgen(struct csid_device *csid, u8 enable, u8 por
 	val = enable << TPG_CTRL_TEST_EN;
 	val |= 1 << TPG_CTRL_FS_PKT_EN;
 	val |= 1 << TPG_CTRL_FE_PKT_EN;
-	val |= (lane_cnt - 1) << TPG_CTRL_NUM_ACTIVE_LANES;
+	val |= 3 << TPG_CTRL_NUM_ACTIVE_LANES;
 	val |= 0x64 << TPG_CTRL_CYCLES_BETWEEN_PKTS;
 	val |= 0xA << TPG_CTRL_NUM_TRAIL_BYTES;
 	writel_relaxed(val, csid->base + CSID_TPG_CTRL);
