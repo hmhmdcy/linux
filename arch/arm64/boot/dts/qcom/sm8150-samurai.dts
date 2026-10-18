@@ -1081,3 +1081,5 @@
 };
 
 #include "s5k3m5-samurai.dtsi"
+
+#include "s5kgw1-samurai.dtsi"
