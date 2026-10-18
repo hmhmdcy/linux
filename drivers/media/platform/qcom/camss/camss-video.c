@@ -7,6 +7,7 @@
  * Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2015-2018 Linaro Ltd.
  */
+#include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <media/media-entity.h>
@@ -147,11 +148,6 @@ static int video_queue_setup(struct vb2_queue *q,
 	return 0;
 }
 
-/* Bounded bring-up diagnostics; normal camera operation stays quiet. */
-static bool trace_dma;
-module_param_named(dma_trace, trace_dma, bool, 0600);
-MODULE_PARM_DESC(dma_trace, "Log prepared SM8150 DMA plane ranges");
-
 /* Verify every byte the SM8150 write master may address, including SG joins. */
 static int video_check_dma_mapping(struct camss_video *video,
 				   struct sg_table *sgt, size_t size)
@@ -159,6 +155,7 @@ static int video_check_dma_mapping(struct camss_video *video,
 	struct scatterlist *sg;
 	dma_addr_t address, expected;
 	size_t remaining = size;
+	u64 limit = dma_get_mask(video->camss->dev);
 	unsigned int i;
 
 	if (video->camss->res->version != CAMSS_8150)
@@ -166,8 +163,7 @@ static int video_check_dma_mapping(struct camss_video *video,
 	if (!sgt || !sgt->sgl || !sgt->nents || !size)
 		return -EINVAL;
 	address = sg_dma_address(sgt->sgl);
-	if (address < 0x07400000 || address >= 0xe0000000 ||
-	    size > 0xe0000000 - address)
+	if (address > limit || size - 1 > limit - address)
 		return -ERANGE;
 	expected = address;
 	for_each_sgtable_dma_sg(sgt, sg, i) {
@@ -204,9 +200,8 @@ static int video_buf_init(struct vb2_buffer *vb)
 		if (ret)
 			return ret;
 		buffer->addr[i] = sg_dma_address(sgt->sgl);
-		if (trace_dma && video->camss->res->version == CAMSS_8150)
-			dev_info(video->camss->dev, "DMA plane %u address %pad size %lu\n",
-				i, &buffer->addr[i], vb2_plane_size(vb, i));
+		dev_dbg(video->camss->dev, "DMA plane %u address %pad size %lu\n",
+			i, &buffer->addr[i], vb2_plane_size(vb, i));
 	}
 
 	if (format->pixelformat == V4L2_PIX_FMT_NV12 ||

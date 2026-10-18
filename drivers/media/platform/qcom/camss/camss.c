@@ -5649,7 +5649,7 @@ static int camss_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto err_genpd_cleanup;
 
-	/* Full native IFE window is enforced by checked IOMMU reservations. */
+	/* Hardware address width; IOVA reservations come from firmware data. */
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
 	if (ret)
 		goto err_genpd_cleanup;

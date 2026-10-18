@@ -108,6 +108,12 @@
 	 * the EFI memory map (drivers/firmware/efi/efi-init.c), not from here.
 	 */
 	reserved-memory {
+		/* RMX1931 firmware IFE exclusions, enforced by the IOMMU core. */
+		camss_iova_resv: reservation-camss-ife {
+			iommu-addresses = <&camss 0 0 0 0x07400000>,
+					  <&camss 0 0xe0000000 0 0x20000000>;
+		};
+
 		/delete-node/ memory@85d00000;	/* MTP xbl_mem 0x85d00000+0x140000 */
 		/delete-node/ memory@85f00000;	/* MTP aop_mem 0x85f00000+0x20000 */
 		/delete-node/ memory@89b00000;	/* MTP rmtfs_mem: not present here */
@@ -1068,3 +1074,8 @@
 };
 
 #include "imx319.dtsi"
+
+&camss {
+	memory-region = <&camss_iova_resv>;
+	memory-region-names = "ife-iova";
+};

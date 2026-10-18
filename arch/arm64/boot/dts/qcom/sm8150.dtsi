@@ -687,10 +687,6 @@
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges;
-		camss_iova_resv: reservation-camss-ife {
-			iommu-addresses = <&camss 0 0 0 0x07400000>,
-					  <&camss 0 0xe0000000 0 0x20000000>;
-		};
 
 
 		hyp_mem: memory@85700000 {
@@ -4113,8 +4109,6 @@
 				 <&apps_smmu 0xe40 0x620>,
 				 <&apps_smmu 0xe60 0x620>;
 
-			memory-region = <&camss_iova_resv>;
-			memory-region-names = "ife-iova";
 			status = "disabled";
 
 			ports {

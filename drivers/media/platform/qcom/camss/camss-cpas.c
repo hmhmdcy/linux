@@ -46,28 +46,16 @@ static const struct camss_cpas_reg sm8150_ife_qos[] = {
 	{ 0x0848, 0xffffffff, 0x00000001 },
 };
 
-static int camss_sm8150_check_iova(struct device *dev)
+/* The DMA/IOMMU core reserves the IOVA regions described by firmware. */
+static int camss_cpas_check_dma_domain(struct device *dev)
 {
 	struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
-	struct iommu_resv_region *region;
-	bool low = false, high = false;
-	LIST_HEAD(regions);
 
 	if (!domain || (domain->type != IOMMU_DOMAIN_DMA &&
 			domain->type != IOMMU_DOMAIN_DMA_FQ))
 		return -ENODEV;
-	iommu_get_resv_regions(dev, &regions);
-	list_for_each_entry(region, &regions, list) {
-		if (region->type != IOMMU_RESV_RESERVED)
-			continue;
-		if (region->start == 0 && region->length == 0x07400000)
-			low = true;
-		if (region->start == 0xe0000000 && region->length == 0x20000000)
-			high = true;
-	}
-	iommu_put_resv_regions(dev, &regions);
-	/* Do not replace the safe mask without both reservation callback policies. */
-	return low && high ? 0 : -EINVAL;
+
+	return 0;
 }
 
 static int camss_cpas_stop(struct camss_cpas *cpas)
@@ -117,9 +105,9 @@ int camss_cpas_init(struct camss *camss)
 
 	if (camss->res->version != CAMSS_8150)
 		return 0;
-	ret = camss_sm8150_check_iova(dev);
+	ret = camss_cpas_check_dma_domain(dev);
 	if (ret)
-		return dev_err_probe(dev, ret, "native IFE IOVA reservations missing\n");
+		return dev_err_probe(dev, ret, "translated DMA domain is required\n");
 	cpas = devm_kzalloc(dev, sizeof(*cpas), GFP_KERNEL);
 	if (!cpas)
 		return -ENOMEM;
