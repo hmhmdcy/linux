@@ -203,6 +203,150 @@ static void devm_irq_domain_fwnode_release(void *data)
 /* Serialize reset/address setup across PM8008 devices on a shared bus. */
 static DEFINE_MUTEX(pm8008_address_lock);
 
+static struct i2c_driver pm8008_mfd_driver;
+
+struct pm8008_reset {
+	struct device *dev;
+	struct gpio_desc *gpio;
+	struct gpio_desc *blocker;
+};
+
+static bool pm8008_has_reset(struct pm8008_reset *reset)
+{
+	return reset->gpio;
+}
+
+static int pm8008_set_reset(struct pm8008_reset *reset, bool asserted)
+{
+	if (reset->gpio)
+		return gpiod_direction_output(reset->gpio, asserted);
+	return 0;
+}
+
+/* Keep persistent managed links, including across a supplier rebind. */
+static int pm8008_link_bound_supplier(struct device *dev, struct device *supplier,
+				      const struct device_driver *expected)
+{
+	struct device_link *link;
+	int ret = 0;
+
+	if (supplier == dev)
+		return -EINVAL;
+	device_lock(supplier);
+	if (!device_is_bound(supplier) ||
+	    READ_ONCE(supplier->links.status) != DL_DEV_DRIVER_BOUND)
+		ret = -EPROBE_DEFER;
+	else if (expected && supplier->driver != expected)
+		ret = -EINVAL;
+	else {
+		link = device_link_add(dev, supplier, DL_FLAG_AUTOPROBE_CONSUMER);
+		if (!link)
+			ret = -EINVAL;
+	}
+	device_unlock(supplier);
+	return ret;
+}
+
+static int pm8008_get_reset(struct i2c_client *client, struct pm8008_reset *reset)
+{
+	reset->dev = &client->dev;
+	reset->gpio = devm_gpiod_get_optional(&client->dev, "reset", GPIOD_ASIS);
+	return PTR_ERR_OR_ZERO(reset->gpio);
+}
+
+/* Hold a dependent device in reset until address assignment is complete. */
+static int pm8008_hold_address_conflict(struct i2c_client *client,
+				      struct pm8008_reset *reset)
+{
+	struct device_node *node, *supplier;
+	u32 address, initial;
+
+	if (device_property_read_u32(&client->dev, "qcom,initial-address", &initial))
+		return 0;
+	for_each_available_child_of_node(client->dev.of_node->parent, node) {
+		if (node == client->dev.of_node ||
+		    !of_device_is_compatible(node, "qcom,pm8008") ||
+		    of_property_read_u32(node, "reg", &address) || address != initial)
+			continue;
+		supplier = of_parse_phandle(node, "qcom,address-setup-supplier", 0);
+		if (supplier != client->dev.of_node) {
+			of_node_put(supplier);
+			of_node_put(node);
+			return -EINVAL;
+		}
+		of_node_put(supplier);
+		reset->blocker = devm_fwnode_gpiod_get_index(&client->dev,
+				of_fwnode_handle(node), "reset", 0,
+				GPIOD_OUT_HIGH, "pm8008-address-conflict");
+		of_node_put(node);
+		return PTR_ERR_OR_ZERO(reset->blocker);
+	}
+	return 0;
+}
+
+static struct device_node *pm8008_address_supplier_node(struct i2c_client *client)
+{
+	struct device *dev = &client->dev;
+	struct device_node *node, *p_parent, *q_parent;
+	u32 address, initial;
+	bool same_parent;
+
+	if (!device_property_present(dev, "qcom,address-setup-supplier"))
+		return NULL;
+	if (!dev->of_node || client->addr != PM8008_FACTORY_ADDRESS ||
+	    (client->flags & I2C_CLIENT_TEN) ||
+	    device_property_present(dev, "qcom,initial-address") ||
+	    !device_property_present(dev, "reset-gpios") ||
+	    of_property_count_u32_elems(dev->of_node, "qcom,address-setup-supplier") != 1)
+		return ERR_PTR(-EINVAL);
+	node = of_parse_phandle(dev->of_node, "qcom,address-setup-supplier", 0);
+	if (!node)
+		return ERR_PTR(-EINVAL);
+	p_parent = of_get_parent(dev->of_node);
+	q_parent = of_get_parent(node);
+	same_parent = p_parent && p_parent == q_parent;
+	of_node_put(p_parent);
+	of_node_put(q_parent);
+	if (node == dev->of_node || !same_parent || !of_device_is_available(node) ||
+	    !of_device_is_compatible(node, "qcom,pm8008") ||
+	    of_property_present(node, "qcom,address-setup-supplier") ||
+	    of_property_read_u32(node, "reg", &address) ||
+	    of_property_read_u32(node, "qcom,initial-address", &initial) ||
+	    address != PM8008_ASSIGNED_ADDRESS || initial != PM8008_FACTORY_ADDRESS) {
+		of_node_put(node);
+		return ERR_PTR(-EINVAL);
+	}
+	return node;
+}
+
+static int pm8008_link_address_supplier(struct i2c_client *client,
+				       struct device_node *node)
+{
+	struct i2c_client *supplier;
+	int ret;
+
+	supplier = i2c_find_device_by_fwnode(of_fwnode_handle(node));
+	if (!supplier)
+		return -EPROBE_DEFER;
+	if (supplier->adapter != client->adapter || (supplier->flags & I2C_CLIENT_TEN))
+		ret = -EINVAL;
+	else
+		ret = pm8008_link_bound_supplier(&client->dev, &supplier->dev,
+						&pm8008_mfd_driver.driver);
+	put_device(&supplier->dev);
+	return ret;
+}
+
+static void pm8008_hold_reset(void *data)
+{
+	struct pm8008_reset *reset = data;
+	int ret;
+
+	ret = pm8008_set_reset(reset, true);
+	if (ret)
+		dev_err(reset->dev, "failed to hold consumer reset: %d\n", ret);
+}
+
 static int pm8008_read_identity(struct i2c_client *client, u16 address)
 {
 	u8 reg[] = { 0x01, 0x00 }, data[6];
@@ -223,7 +367,7 @@ static int pm8008_read_identity(struct i2c_client *client, u16 address)
 }
 
 static int pm8008_initialize_address(struct i2c_client *client,
-				     struct gpio_desc *reset)
+				     struct pm8008_reset *reset)
 {
 	struct device *dev = &client->dev;
 	u8 write_sid[] = { PM8008_SID_CONFIG >> 8, PM8008_SID_CONFIG & 0xff, 1 };
@@ -238,8 +382,8 @@ static int pm8008_initialize_address(struct i2c_client *client,
 
 	if (!device_property_present(dev, "qcom,initial-address")) {
 		/* Keep the pre-existing reset behaviour for ordinary PM8008 nodes. */
-		if (reset) {
-			ret = gpiod_direction_output(reset, 0);
+		if (pm8008_has_reset(reset)) {
+			ret = pm8008_set_reset(reset, 0);
 			if (ret)
 				return ret;
 		}
@@ -251,7 +395,7 @@ static int pm8008_initialize_address(struct i2c_client *client,
 	if (ret)
 		return ret;
 	if (initial != PM8008_FACTORY_ADDRESS ||
-	    client->addr != PM8008_ASSIGNED_ADDRESS || !reset ||
+	    client->addr != PM8008_ASSIGNED_ADDRESS || !pm8008_has_reset(reset) ||
 	    (client->flags & I2C_CLIENT_TEN) ||
 	    !i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 		return -EINVAL;
@@ -259,13 +403,13 @@ static int pm8008_initialize_address(struct i2c_client *client,
 	ret = pm8008_read_identity(client, client->addr);
 	if (!ret) {
 		/* Firmware already assigned the address; preserve its LDO state. */
-		ret = gpiod_direction_output(reset, 0);
+		ret = pm8008_set_reset(reset, 0);
 		goto out;
 	}
 	if (ret != -ENXIO && ret != -EREMOTEIO)
 		goto out;
 
-	ret = gpiod_direction_output(reset, 1);
+	ret = pm8008_set_reset(reset, 1);
 	if (ret)
 		goto out;
 	usleep_range(10000, 11000);
@@ -279,7 +423,7 @@ static int pm8008_initialize_address(struct i2c_client *client,
 		goto out;
 
 	release_attempted = true;
-	ret = gpiod_direction_output(reset, 0);
+	ret = pm8008_set_reset(reset, 0);
 	if (ret)
 		goto out;
 	usleep_range(10000, 11000);
@@ -298,26 +442,72 @@ static int pm8008_initialize_address(struct i2c_client *client,
 out:
 	if (ret && release_attempted) {
 		/* Do not leave an unassigned PMIC awake at the shared address. */
-		reset_ret = gpiod_direction_output(reset, 1);
+		reset_ret = pm8008_set_reset(reset, 1);
 		if (reset_ret)
 			dev_err(dev, "failed to reassert reset: %d\n", reset_ret);
 	}
 	return ret;
 }
 
-static int pm8008_reset_and_address(struct i2c_client *client)
+static int pm8008_reset_and_address(struct i2c_client *client,
+				    struct pm8008_reset **result)
 {
-	struct gpio_desc *reset;
+	struct device *dev = &client->dev;
+	struct device_node *supplier;
+	struct pm8008_reset *reset;
 	int ret;
 
-	reset = devm_gpiod_get_optional(&client->dev, "reset", GPIOD_ASIS);
-	if (IS_ERR(reset))
-		return PTR_ERR(reset);
-
+	supplier = pm8008_address_supplier_node(client);
+	if (IS_ERR(supplier))
+		return PTR_ERR(supplier);
+	if (supplier) {
+		ret = pm8008_link_address_supplier(client, supplier);
+		if (ret)
+			goto put_node;
+	}
+	reset = devm_kzalloc(dev, sizeof(*reset), GFP_KERNEL);
+	if (!reset) {
+		ret = -ENOMEM;
+		goto put_node;
+	}
+	ret = pm8008_hold_address_conflict(client, reset);
+	if (ret)
+		goto put_node;
+	ret = pm8008_get_reset(client, reset);
+	if (ret)
+		goto put_node;
+	/* Children disappear before reset is asserted and its GPIO released. */
+	if (pm8008_has_reset(reset)) {
+		ret = devm_add_action_or_reset(dev, pm8008_hold_reset, reset);
+		if (ret)
+			goto put_node;
+	}
 	mutex_lock(&pm8008_address_lock);
 	ret = pm8008_initialize_address(client, reset);
+	if (!ret)
+		ret = pm8008_read_identity(client, client->addr);
 	mutex_unlock(&pm8008_address_lock);
+	if (!ret)
+		*result = reset;
+put_node:
+	of_node_put(supplier);
 	return ret;
+}
+
+struct pm8008_global_enable {
+	struct regmap *regmap;
+	unsigned int original;
+};
+
+static void pm8008_restore_global(void *data)
+{
+	struct pm8008_global_enable *enable = data;
+	int ret;
+
+	ret = regmap_update_bits(enable->regmap, 0x0950, BIT(0), enable->original);
+	if (ret)
+		dev_err(regmap_get_device(enable->regmap),
+			"failed to restore global enable: %d\n", ret);
 }
 
 static int pm8008_probe(struct i2c_client *client)
@@ -329,11 +519,13 @@ static int pm8008_probe(struct i2c_client *client)
 	struct fwnode_handle *fwnode;
 	struct irq_domain *domain;
 	struct i2c_client *dummy;
+	struct pm8008_reset *reset;
+	struct pm8008_global_enable *enable;
 	int num_cells;
 	char *name;
 	int ret;
 
-	ret = pm8008_reset_and_address(client);
+	ret = pm8008_reset_and_address(client, &reset);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to initialize PMIC address\n");
 
@@ -357,6 +549,21 @@ static int pm8008_probe(struct i2c_client *client)
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
+
+	enable = devm_kzalloc(dev, sizeof(*enable), GFP_KERNEL);
+	if (!enable)
+		return -ENOMEM;
+	enable->regmap = regmap;
+	ret = regmap_read(regmap, 0x0950, &enable->original);
+	if (ret)
+		return ret;
+	enable->original &= BIT(0);
+	ret = devm_add_action_or_reset(dev, pm8008_restore_global, enable);
+	if (ret)
+		return ret;
+	ret = regmap_update_bits(regmap, 0x0950, BIT(0), BIT(0));
+	if (ret)
+		return ret;
 
 	if (client->irq > 0) {
 		name = devm_kasprintf(dev, GFP_KERNEL, "%pOF-internal", dev->of_node);
@@ -393,8 +600,16 @@ static int pm8008_probe(struct i2c_client *client)
 	/* Needed by GPIO driver. */
 	dev_set_drvdata(dev, domain);
 
-	return devm_mfd_add_devices(dev, PLATFORM_DEVID_AUTO, cells,
-				num_cells, NULL, 0, domain);
+	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_AUTO, cells,
+				   num_cells, NULL, 0, domain);
+	if (ret)
+		return ret;
+	/* The persistent consumer link permits the dependent PMIC to probe next. */
+	if (reset->blocker) {
+		devm_gpiod_put(dev, reset->blocker);
+		reset->blocker = NULL;
+	}
+	return 0;
 }
 
 static const struct of_device_id pm8008_match[] = {

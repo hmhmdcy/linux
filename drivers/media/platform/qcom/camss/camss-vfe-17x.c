@@ -11,6 +11,8 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 
+#include <media/v4l2-event.h>
+
 #include "camss.h"
 #include "camss-vfe.h"
 
@@ -474,7 +476,34 @@ error_get_output:
  */
 static void vfe_isr_sof(struct vfe_device *vfe, enum vfe_line_id line_id)
 {
-	/* nop */
+	struct v4l2_event event = { .type = V4L2_EVENT_FRAME_SYNC };
+	struct vfe_output *output;
+	unsigned long flags;
+	unsigned int i;
+
+	if (vfe->camss->res->version != CAMSS_8150)
+		return;
+
+	spin_lock_irqsave(&vfe->output_lock, flags);
+	output = &vfe->line[line_id].output;
+	if (output->state != VFE_OUTPUT_ON) {
+		spin_unlock_irqrestore(&vfe->output_lock, flags);
+		return;
+	}
+	event.u.frame_sync.frame_sequence = output->sof_sequence++;
+	/* A previous buffer may await DONE when this SOF is handled. */
+	for (i = 0; i < CAMSS_INIT_BUF_COUNT; i++) {
+		struct camss_buffer *buf = output->buf[i];
+
+		if (buf && !buf->sof_valid) {
+			buf->vb.sequence = event.u.frame_sync.frame_sequence;
+			buf->sof_valid = true;
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&vfe->output_lock, flags);
+
+	v4l2_subdev_notify_event(&vfe->line[line_id].subdev, &event);
 }
 
 /*
@@ -513,6 +542,7 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 	unsigned long flags;
 	u32 index;
 	u64 ts = ktime_get_ns();
+	bool sof_valid = true;
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
@@ -531,7 +561,14 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 	}
 
 	ready_buf->vb.vb2_buf.timestamp = ts;
-	ready_buf->vb.sequence = output->sequence++;
+	if (vfe->camss->res->version == CAMSS_8150) {
+		sof_valid = ready_buf->sof_valid;
+		if (!sof_valid)
+			dev_err_ratelimited(vfe->camss->dev,
+					    "Missing SOF tag for completed buffer\n");
+	} else {
+		ready_buf->vb.sequence = output->sequence++;
+	}
 
 	index = 0;
 	output->buf[0] = output->buf[1];
@@ -547,7 +584,8 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
-	vb2_buffer_done(&ready_buf->vb.vb2_buf, VB2_BUF_STATE_DONE);
+	vb2_buffer_done(&ready_buf->vb.vb2_buf,
+			sof_valid ? VB2_BUF_STATE_DONE : VB2_BUF_STATE_ERROR);
 
 	return;
 

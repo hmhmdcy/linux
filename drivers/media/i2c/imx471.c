@@ -29,6 +29,7 @@
 
 /* V_TIMING internal */
 #define IMX471_REG_FLL				CCI_REG16(0x0340)
+#define IMX471_REG_LLP				CCI_REG16(0x0342)
 #define IMX471_FLL_MAX				0xffff
 
 /* Exposure control */
@@ -64,6 +65,11 @@
 /* default link frequency and external clock */
 #define IMX471_LINK_FREQ_DEFAULT		200000000LL
 #define IMX471_EXT_CLK				19200000
+
+/* Raw experiment only: full-resolution CFA still needs software remosaic. */
+static bool imx471_unprocessed_fullres;
+module_param_named(unprocessed_fullres, imx471_unprocessed_fullres, bool, 0444);
+MODULE_PARM_DESC(unprocessed_fullres, "Permit experimental unprocessed full-resolution raw mode");
 
 /* PLL */
 #define IMX471_REG_VTPXCK_DIV			CCI_REG8(0x0301)
@@ -143,6 +149,9 @@ struct imx471_mode {
 
 	/* H-timing */
 	u32 llp;
+	u32 link_freq_index;
+	u64 pixel_rate;
+	bool requires_remosaic;
 
 	const struct cci_reg_sequence *default_mode_regs;
 	unsigned int default_mode_regs_length;
@@ -158,6 +167,9 @@ struct imx471 {
 	struct v4l2_ctrl *vflip;
 	struct v4l2_ctrl *hflip;
 	struct v4l2_ctrl *exposure;
+	struct v4l2_ctrl *link_freq;
+	struct v4l2_ctrl *pixel_rate;
+	unsigned long link_freq_bitmap;
 
 	struct gpio_desc *reset_gpio;
 	struct regulator_bulk_data supplies[ARRAY_SIZE(imx471_supply_name)];
@@ -228,6 +240,7 @@ static const struct cci_reg_sequence imx471_global_regs[] = {
 static const struct cci_reg_sequence mode_1928x1088_regs[] = {
 	{ IMX471_REG_CSI_DATA_FORMAT, IMX471_CSI_DATA_FORMAT_RAW10 },
 	{ IMX471_REG_CSI_LANE_MODE, IMX471_CSI_4_LANE_MODE },
+	{ IMX471_REG_LLP, 5120 },
 	{ IMX471_REG_X_ADD_STA, 8 },
 	{ IMX471_REG_Y_ADD_STA, 408 },
 	{ IMX471_REG_X_ADD_END, 4647 },
@@ -271,8 +284,133 @@ static const char * const imx471_test_pattern_menu[] = {
 	"Pseudorandom Sequence (PN9)",
 };
 
+
+static const struct cci_reg_sequence mode_2304x1728_factory_regs[] = {
+	{ CCI_REG8(0x0112), 0x0a },
+	{ CCI_REG8(0x0113), 0x0a },
+	{ CCI_REG8(0x0114), 0x03 },
+	{ CCI_REG8(0x0342), 0x0a },
+	{ CCI_REG8(0x0343), 0x00 },
+	{ CCI_REG8(0x0340), 0x10 },
+	{ CCI_REG8(0x0341), 0x9a },
+	{ CCI_REG8(0x0344), 0x00 },
+	{ CCI_REG8(0x0345), 0x00 },
+	{ CCI_REG8(0x0346), 0x00 },
+	{ CCI_REG8(0x0347), 0x00 },
+	{ CCI_REG8(0x0348), 0x12 },
+	{ CCI_REG8(0x0349), 0x2f },
+	{ CCI_REG8(0x034a), 0x0d },
+	{ CCI_REG8(0x034b), 0xa7 },
+	{ CCI_REG8(0x0381), 0x01 },
+	{ CCI_REG8(0x0383), 0x01 },
+	{ CCI_REG8(0x0385), 0x01 },
+	{ CCI_REG8(0x0387), 0x01 },
+	{ CCI_REG8(0x0900), 0x01 },
+	{ CCI_REG8(0x0901), 0x22 },
+	{ CCI_REG8(0x0902), 0x08 },
+	{ CCI_REG8(0x3f4c), 0x81 },
+	{ CCI_REG8(0x3f4d), 0x81 },
+	{ CCI_REG8(0x0408), 0x00 },
+	{ CCI_REG8(0x0409), 0x0c },
+	{ CCI_REG8(0x040a), 0x00 },
+	{ CCI_REG8(0x040b), 0x0a },
+	{ CCI_REG8(0x040c), 0x09 },
+	{ CCI_REG8(0x040d), 0x00 },
+	{ CCI_REG8(0x040e), 0x06 },
+	{ CCI_REG8(0x040f), 0xc0 },
+	{ CCI_REG8(0x034c), 0x09 },
+	{ CCI_REG8(0x034d), 0x00 },
+	{ CCI_REG8(0x034e), 0x06 },
+	{ CCI_REG8(0x034f), 0xc0 },
+	{ CCI_REG8(0x0301), 0x06 },
+	{ CCI_REG8(0x0303), 0x02 },
+	{ CCI_REG8(0x0305), 0x03 },
+	{ CCI_REG8(0x0306), 0x00 },
+	{ CCI_REG8(0x0307), 0x99 },
+	{ CCI_REG8(0x030b), 0x01 },
+	{ CCI_REG8(0x030d), 0x06 },
+	{ CCI_REG8(0x030e), 0x00 },
+	{ CCI_REG8(0x030f), 0xfa },
+	{ CCI_REG8(0x0310), 0x01 },
+	{ CCI_REG8(0x3f78), 0x01 },
+	{ CCI_REG8(0x3f79), 0x31 },
+	{ CCI_REG8(0x3ffe), 0x00 },
+	{ CCI_REG8(0x3fff), 0x8a },
+	{ CCI_REG8(0x5f0a), 0xb6 },
+	{ CCI_REG8(0x0202), 0x10 },
+	{ CCI_REG8(0x0203), 0x88 },
+	{ CCI_REG8(0x0204), 0x00 },
+	{ CCI_REG8(0x0205), 0x00 },
+	{ CCI_REG8(0x020e), 0x01 },
+	{ CCI_REG8(0x020f), 0x00 },
+	{ CCI_REG8(0x3f15), 0x00 },
+};
+
+static const struct cci_reg_sequence mode_4608x3456_factory_regs[] = {
+	{ CCI_REG8(0x0112), 0x0a },
+	{ CCI_REG8(0x0113), 0x0a },
+	{ CCI_REG8(0x0114), 0x03 },
+	{ CCI_REG8(0x0342), 0x14 },
+	{ CCI_REG8(0x0343), 0x00 },
+	{ CCI_REG8(0x0340), 0x0e },
+	{ CCI_REG8(0x0341), 0xb2 },
+	{ CCI_REG8(0x0344), 0x00 },
+	{ CCI_REG8(0x0345), 0x00 },
+	{ CCI_REG8(0x0346), 0x00 },
+	{ CCI_REG8(0x0347), 0x00 },
+	{ CCI_REG8(0x0348), 0x12 },
+	{ CCI_REG8(0x0349), 0x2f },
+	{ CCI_REG8(0x034a), 0x0d },
+	{ CCI_REG8(0x034b), 0xa7 },
+	{ CCI_REG8(0x0381), 0x01 },
+	{ CCI_REG8(0x0383), 0x01 },
+	{ CCI_REG8(0x0385), 0x01 },
+	{ CCI_REG8(0x0387), 0x01 },
+	{ CCI_REG8(0x0900), 0x00 },
+	{ CCI_REG8(0x0901), 0x11 },
+	{ CCI_REG8(0x0902), 0x0a },
+	{ CCI_REG8(0x3f4c), 0x01 },
+	{ CCI_REG8(0x3f4d), 0x01 },
+	{ CCI_REG8(0x0408), 0x00 },
+	{ CCI_REG8(0x0409), 0x18 },
+	{ CCI_REG8(0x040a), 0x00 },
+	{ CCI_REG8(0x040b), 0x14 },
+	{ CCI_REG8(0x040c), 0x12 },
+	{ CCI_REG8(0x040d), 0x00 },
+	{ CCI_REG8(0x040e), 0x0d },
+	{ CCI_REG8(0x040f), 0x80 },
+	{ CCI_REG8(0x034c), 0x12 },
+	{ CCI_REG8(0x034d), 0x00 },
+	{ CCI_REG8(0x034e), 0x0d },
+	{ CCI_REG8(0x034f), 0x80 },
+	{ CCI_REG8(0x0301), 0x06 },
+	{ CCI_REG8(0x0303), 0x02 },
+	{ CCI_REG8(0x0305), 0x03 },
+	{ CCI_REG8(0x0306), 0x01 },
+	{ CCI_REG8(0x0307), 0x0f },
+	{ CCI_REG8(0x030b), 0x01 },
+	{ CCI_REG8(0x030d), 0x06 },
+	{ CCI_REG8(0x030e), 0x01 },
+	{ CCI_REG8(0x030f), 0xd4 },
+	{ CCI_REG8(0x0310), 0x01 },
+	{ CCI_REG8(0x3f78), 0x02 },
+	{ CCI_REG8(0x3f79), 0x0a },
+	{ CCI_REG8(0x3ffe), 0x00 },
+	{ CCI_REG8(0x3fff), 0x18 },
+	{ CCI_REG8(0x5f0a), 0xb2 },
+	{ CCI_REG8(0x0202), 0x0e },
+	{ CCI_REG8(0x0203), 0xa0 },
+	{ CCI_REG8(0x0204), 0x00 },
+	{ CCI_REG8(0x0205), 0x00 },
+	{ CCI_REG8(0x020e), 0x01 },
+	{ CCI_REG8(0x020f), 0x00 },
+	{ CCI_REG8(0x3f15), 0x00 },
+};
+
 static const s64 link_freq_menu_items[] = {
 	IMX471_LINK_FREQ_DEFAULT,
+	400000000LL,
+	748800000LL,
 };
 
 /*
@@ -301,11 +439,70 @@ static const struct imx471_mode imx471_modes[] = {
 		},
 		.fll_def = 1308,
 		.fll_min = 1308,
-		.llp = 2328,
+		.llp = 5120,
+		.link_freq_index = 0,
+		.pixel_rate = 387200000,
 		.default_mode_regs = mode_1928x1088_regs,
 		.default_mode_regs_length = ARRAY_SIZE(mode_1928x1088_regs),
 	},
+	{
+		.width = 2304,
+		.height = 1728,
+		.crop = { 0, 0, 4656, 3496 },
+		.fll_def = 4250,
+		.fll_min = 2124,
+		.llp = 2560,
+		.link_freq_index = 1,
+		.pixel_rate = 326400000,
+		.requires_remosaic = false,
+		.default_mode_regs = mode_2304x1728_factory_regs,
+		.default_mode_regs_length = ARRAY_SIZE(mode_2304x1728_factory_regs),
+	},
+	{
+		.width = 4608,
+		.height = 3456,
+		.crop = { 0, 0, 4656, 3496 },
+		.fll_def = 3762,
+		.fll_min = 3762,
+		.llp = 5120,
+		.link_freq_index = 2,
+		.pixel_rate = 578133333,
+		.requires_remosaic = true,
+		.default_mode_regs = mode_4608x3456_factory_regs,
+		.default_mode_regs_length = ARRAY_SIZE(mode_4608x3456_factory_regs),
+	},
 };
+
+
+static bool imx471_mode_available(const struct imx471 *sensor,
+				  const struct imx471_mode *mode)
+{
+	return (sensor->link_freq_bitmap & BIT(mode->link_freq_index)) &&
+	       (!mode->requires_remosaic || imx471_unprocessed_fullres);
+}
+
+static const struct imx471_mode *imx471_find_mode(struct imx471 *sensor,
+						  u32 width, u32 height)
+{
+	const struct imx471_mode *best = NULL;
+	u64 best_distance = U64_MAX;
+
+	for (unsigned int i = 0; i < ARRAY_SIZE(imx471_modes); i++) {
+		const struct imx471_mode *mode = &imx471_modes[i];
+		u64 distance;
+
+		if (!imx471_mode_available(sensor, mode))
+			continue;
+		distance = abs((s64)mode->width - width) +
+			   abs((s64)mode->height - height);
+		if (distance < best_distance) {
+			best = mode;
+			best_distance = distance;
+		}
+	}
+
+	return best;
+}
 
 static int imx471_get_regulators(struct device *dev, struct imx471 *sensor)
 {
@@ -326,6 +523,11 @@ static int imx471_set_ctrl(struct v4l2_ctrl *ctrl)
 	const struct v4l2_mbus_framefmt *format =
 			v4l2_subdev_state_get_format(state, 0);
 	int ret;
+
+	/* Mode metadata controls do not program sensor registers. */
+	if (ctrl->id == V4L2_CID_LINK_FREQ || ctrl->id == V4L2_CID_PIXEL_RATE ||
+	    ctrl->id == V4L2_CID_HBLANK)
+		return 0;
 
 	if (ctrl->id == V4L2_CID_VBLANK) {
 		s64 exposure_max = format->height + ctrl->val -
@@ -413,15 +615,22 @@ static int imx471_enum_frame_size(struct v4l2_subdev *sd,
 				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_frame_size_enum *fse)
 {
-	if (fse->index >= ARRAY_SIZE(imx471_modes))
-		return -EINVAL;
+	struct imx471 *sensor = to_imx471(sd);
+	unsigned int available = 0;
 
-	fse->min_width = imx471_modes[fse->index].width;
-	fse->max_width = fse->min_width;
-	fse->min_height = imx471_modes[fse->index].height;
-	fse->max_height = fse->min_height;
+	for (unsigned int i = 0; i < ARRAY_SIZE(imx471_modes); i++) {
+		const struct imx471_mode *mode = &imx471_modes[i];
 
-	return 0;
+		if (!imx471_mode_available(sensor, mode))
+			continue;
+		if (available++ != fse->index)
+			continue;
+		fse->min_width = fse->max_width = mode->width;
+		fse->min_height = fse->max_height = mode->height;
+		return 0;
+	}
+
+	return -EINVAL;
 }
 
 static void imx471_update_pad_format(struct imx471 *sensor,
@@ -442,9 +651,9 @@ static int imx471_set_pad_format(struct v4l2_subdev *sd,
 	const struct imx471_mode *mode;
 	int h_blank, ret;
 
-	mode = v4l2_find_nearest_size(imx471_modes, ARRAY_SIZE(imx471_modes),
-				      width, height, fmt->format.width,
-				      fmt->format.height);
+	mode = imx471_find_mode(sensor, fmt->format.width, fmt->format.height);
+	if (!mode)
+		return -EINVAL;
 
 	imx471_update_pad_format(sensor, mode, fmt);
 
@@ -458,11 +667,26 @@ static int imx471_set_pad_format(struct v4l2_subdev *sd,
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
 		return 0;
 
+	ret = __v4l2_ctrl_s_ctrl(sensor->link_freq, mode->link_freq_index);
+	if (ret)
+		return ret;
+	ret = __v4l2_ctrl_modify_range(sensor->pixel_rate, mode->pixel_rate,
+				       mode->pixel_rate, 1, mode->pixel_rate);
+	if (ret)
+		return ret;
+	ret = __v4l2_ctrl_s_ctrl_int64(sensor->pixel_rate, mode->pixel_rate);
+	if (ret)
+		return ret;
+
 	ret = __v4l2_ctrl_modify_range(sensor->vblank,
 				       mode->fll_min - mode->height,
 				       IMX471_FLL_MAX - mode->height,
 				       1,
 				       mode->fll_def - mode->height);
+	if (ret)
+		return ret;
+
+	ret = __v4l2_ctrl_s_ctrl(sensor->vblank, mode->fll_def - mode->height);
 	if (ret)
 		return ret;
 
@@ -491,8 +715,13 @@ static int imx471_get_selection(struct v4l2_subdev *sd,
 		sel->r.height = IMX471_NATIVE_HEIGHT;
 		return 0;
 
-	case V4L2_SEL_TGT_CROP_DEFAULT:
 	case V4L2_SEL_TGT_CROP_BOUNDS:
+		sel->r = (struct v4l2_rect) {
+			.width = IMX471_NATIVE_WIDTH,
+			.height = IMX471_NATIVE_HEIGHT,
+		};
+		return 0;
+	case V4L2_SEL_TGT_CROP_DEFAULT:
 		sel->r.top = IMX471_PIXEL_ARRAY_TOP;
 		sel->r.left = IMX471_PIXEL_ARRAY_LEFT;
 		sel->r.width = IMX471_PIXEL_ARRAY_WIDTH;
@@ -651,8 +880,13 @@ static int imx471_enable_stream(struct v4l2_subdev *sd,
 	}
 
 	fmt = v4l2_subdev_state_get_format(state, 0);
-	mode = v4l2_find_nearest_size(imx471_modes, ARRAY_SIZE(imx471_modes),
-				      width, height, fmt->width, fmt->height);
+	mode = imx471_find_mode(sensor, fmt->width, fmt->height);
+	if (!mode) {
+		ret = -EINVAL;
+		goto error_powerdown;
+	}
+	if (mode->requires_remosaic)
+		dev_warn_once(sensor->dev, "Full-resolution stream requires software remosaic\n");
 
 	ret = cci_multi_reg_write(sensor->regmap, mode->default_mode_regs,
 				  mode->default_mode_regs_length, NULL);
@@ -759,10 +993,14 @@ static int imx471_init_controls(struct imx471 *sensor)
 					   0,
 					   link_freq_menu_items);
 
-	/* pixel_rate = link_freq * 2 * nr_of_lanes / bits_per_sample */
-	pixel_rate = div_u64(IMX471_LINK_FREQ_DEFAULT * 2 * 4, 10);
+	sensor->link_freq = link_freq;
+	link_freq->menu_skip_mask = GENMASK(ARRAY_SIZE(link_freq_menu_items) - 1, 0) &
+				    ~sensor->link_freq_bitmap;
 
-	v4l2_ctrl_new_std(ctrl_hdlr, &imx471_ctrl_ops,
+	/* Pixel-array rate comes from the VT PLL, not CSI-2 throughput. */
+	pixel_rate = mode->pixel_rate;
+
+	sensor->pixel_rate = v4l2_ctrl_new_std(ctrl_hdlr, &imx471_ctrl_ops,
 			  V4L2_CID_PIXEL_RATE, pixel_rate,
 			  pixel_rate, 1, pixel_rate);
 
@@ -866,6 +1104,13 @@ static int imx471_check_hwcfg(struct imx471 *sensor)
 				       link_freq_menu_items,
 				       ARRAY_SIZE(link_freq_menu_items),
 				       &link_freq_bitmap);
+	if (!ret) {
+		/* Preserve the legacy default mode while adding opt-in profiles. */
+		if (!(link_freq_bitmap & BIT(0)))
+			ret = -EINVAL;
+		else
+			sensor->link_freq_bitmap = link_freq_bitmap;
+	}
 
 done_endpoint_free:
 	v4l2_fwnode_endpoint_free(&bus_cfg);

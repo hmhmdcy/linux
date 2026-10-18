@@ -942,18 +942,20 @@
 #include <dt-bindings/clock/qcom,sm8150-camcc.h>
 #include <dt-bindings/media/video-interfaces.h>
 
-&pm8150l_gpios {
-	/* The unused rear PMIC shares the factory address with the front PMIC. */
-	cam_rear_reset_hog: camera-rear-reset-hog {
-		gpio-hog;
-		gpios = <1 GPIO_ACTIVE_HIGH>;
-		output-low;
-		line-name = "camera-rear-reset";
-	};
-};
+
 
 &i2c4 {
-	pmic@4 {
+	/* VINs are incomplete: product configuration keeps P disabled. */
+	cam_pmic_p: pmic@8 {
+		compatible = "qcom,pm8008";
+		reg = <8>;
+		reset-gpios = <&pm8150l_gpios 1 GPIO_ACTIVE_LOW>;
+		vdd-l1-l2-supply = <&vreg_s8c_1p3>;
+		qcom,address-setup-supplier = <&cam_pmic_q>;
+		status = "okay";
+	};
+
+	cam_pmic_q: pmic@4 {
 		compatible = "qcom,pm8008";
 		reg = <4>;
 		qcom,initial-address = <8>;
@@ -1043,7 +1045,7 @@
 		port {
 			cam_front_ep: endpoint {
 				data-lanes = <1 2 3 4>;
-				link-frequencies = /bits/ 64 <200000000>;
+				link-frequencies = /bits/ 64 <200000000 400000000 748800000>;
 				remote-endpoint = <&cam_front_csiphy2_ep>;
 			};
 		};
@@ -1064,3 +1066,5 @@
 		};
 	};
 };
+
+#include "imx319.dtsi"

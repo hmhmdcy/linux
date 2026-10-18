@@ -20,6 +20,7 @@
 #include <linux/spinlock.h>
 #include <media/media-entity.h>
 #include <media/v4l2-device.h>
+#include <media/v4l2-event.h>
 #include <media/v4l2-subdev.h>
 
 #include "camss-vfe.h"
@@ -541,6 +542,7 @@ int vfe_enable_output_v2(struct vfe_line *line)
 	output->state = VFE_OUTPUT_ON;
 
 	output->sequence = 0;
+	output->sof_sequence = 0;
 	output->wait_reg_update = 0;
 	reinit_completion(&output->reg_update);
 
@@ -583,6 +585,7 @@ int vfe_queue_buffer_v2(struct camss_video *vid,
 	output = &line->output;
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
+	buf->sof_valid = false;
 
 	if (output->state == VFE_OUTPUT_ON &&
 	    output->gen2.active_num < 2) {
@@ -786,8 +789,9 @@ static void vfe_buf_flush_pending(struct vfe_output *output,
 	struct camss_buffer *t;
 
 	list_for_each_entry_safe(buf, t, &output->pending_bufs, queue) {
-		vb2_buffer_done(&buf->vb.vb2_buf, state);
 		list_del(&buf->queue);
+		if (buf->vb.vb2_buf.state == VB2_BUF_STATE_ACTIVE)
+			vb2_buffer_done(&buf->vb.vb2_buf, state);
 	}
 }
 
@@ -1184,24 +1188,32 @@ int vfe_flush_buffers(struct camss_video *vid,
 	struct vfe_line *line = container_of(vid, struct vfe_line, video_out);
 	struct vfe_device *vfe = to_vfe(line);
 	struct vfe_output *output;
+	struct camss_buffer *buf0, *buf1, *last;
 	unsigned long flags;
 
 	output = &line->output;
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
 
+	buf0 = output->buf[0];
+	buf1 = output->buf[1];
+	last = output->last_buffer;
+	output->buf[0] = NULL;
+	output->buf[1] = NULL;
+	output->last_buffer = NULL;
+	/* gen1 shares this union; only the VFE170 path uses active_num. */
+	if (vfe->res->hw_ops == &vfe_ops_170)
+		output->gen2.active_num = 0;
+
 	vfe_buf_flush_pending(output, state);
-
-	if (output->buf[0])
-		vb2_buffer_done(&output->buf[0]->vb.vb2_buf, state);
-
-	if (output->buf[1])
-		vb2_buffer_done(&output->buf[1]->vb.vb2_buf, state);
-
-	if (output->last_buffer) {
-		vb2_buffer_done(&output->last_buffer->vb.vb2_buf, state);
-		output->last_buffer = NULL;
-	}
+	if (buf0 && buf0->vb.vb2_buf.state == VB2_BUF_STATE_ACTIVE)
+		vb2_buffer_done(&buf0->vb.vb2_buf, state);
+	if (buf1 && buf1 != buf0 &&
+	    buf1->vb.vb2_buf.state == VB2_BUF_STATE_ACTIVE)
+		vb2_buffer_done(&buf1->vb.vb2_buf, state);
+	if (last && last != buf0 && last != buf1 &&
+	    last->vb.vb2_buf.state == VB2_BUF_STATE_ACTIVE)
+		vb2_buffer_done(&last->vb.vb2_buf, state);
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
@@ -1967,7 +1979,23 @@ static int vfe_link_setup(struct media_entity *entity,
 	return 0;
 }
 
+static int vfe_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
+			       struct v4l2_event_subscription *sub)
+{
+	struct vfe_line *line = v4l2_get_subdevdata(sd);
+	struct vfe_device *vfe = to_vfe(line);
+
+	if (vfe->camss->res->version != CAMSS_8150 ||
+	    vfe->res->hw_ops != &vfe_ops_170 ||
+	    sub->type != V4L2_EVENT_FRAME_SYNC || sub->id)
+		return -EINVAL;
+
+	return v4l2_event_subscribe(fh, sub, 16, NULL);
+}
+
 static const struct v4l2_subdev_core_ops vfe_core_ops = {
+	.subscribe_event = vfe_subscribe_event,
+	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
 	.s_power = vfe_set_power,
 };
 
@@ -2075,6 +2103,9 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 		v4l2_subdev_init(sd, &vfe_v4l2_ops);
 		sd->internal_ops = &vfe_v4l2_internal_ops;
 		sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
+		if (vfe->camss->res->version == CAMSS_8150 &&
+		    vfe->res->hw_ops == &vfe_ops_170)
+			sd->flags |= V4L2_SUBDEV_FL_HAS_EVENTS;
 		if (i == VFE_LINE_PIX && vfe->res->is_lite == false)
 			snprintf(sd->name, ARRAY_SIZE(sd->name), "%s%d_%s",
 				 MSM_VFE_NAME, vfe->id, "pix");

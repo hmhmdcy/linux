@@ -13,6 +13,9 @@ description: |
   Qualcomm Technologies, Inc. PM8008 is a dedicated camera PMIC that integrates
   all the necessary power management, housekeeping, and interface support
   functions into a single IC.
+  LDO output constraints are described under regulators. Omitted PLDO input
+  supplies are externally managed; the driver does not create dummy input
+  regulators for them. Describe controllable input supplies where known.
 
 properties:
   compatible:
@@ -34,6 +37,14 @@ properties:
       Primary address after reset when the operating address in reg is 4.
       Requires reset-gpios. Any sibling at the initial address must remain
       in reset until the operating address has been assigned.
+
+  qcom,address-setup-supplier:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: |
+      PM8008 on the same I2C bus which must finish moving from factory
+      address 8 to operating address 4 before this device may leave reset.
+      The supplier temporarily holds this device's reset GPIO while setting
+      its address. A persistent device link orders probe and removal.
 
   vdd-l1-l2-supply: true
   vdd-l3-l4-supply: true
@@ -97,10 +108,6 @@ required:
   - compatible
   - reg
   - vdd-l1-l2-supply
-  - vdd-l3-l4-supply
-  - vdd-l5-supply
-  - vdd-l6-supply
-  - vdd-l7-supply
 
 allOf:
   - if:
@@ -114,6 +121,7 @@ allOf:
 
 dependencies:
   qcom,initial-address: [ reset-gpios ]
+  qcom,address-setup-supplier: [ reset-gpios ]
   interrupt-controller: [ interrupts, "#interrupt-cells" ]
   "#interrupt-cells": [ interrupts, interrupt-controller ]
   gpio-controller: [ interrupts, interrupt-controller, "#gpio-cells", gpio-ranges ]
