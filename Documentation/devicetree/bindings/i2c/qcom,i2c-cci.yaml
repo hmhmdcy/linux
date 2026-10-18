@@ -71,6 +71,9 @@ properties:
   reg:
     maxItems: 1
 
+  vddio-supply:
+    description: Supply for the shared CCI I2C bus I/O and pull-ups.
+
 patternProperties:
   "^i2c-bus@[01]$":
     $ref: /schemas/i2c/i2c-controller.yaml#

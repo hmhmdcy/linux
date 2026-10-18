@@ -1083,3 +1083,12 @@
 #include "s5k3m5-samurai.dtsi"
 
 #include "s5kgw1-samurai.dtsi"
+
+/* Shared camera I/O must also be powered for autonomous lens/EEPROM traffic. */
+&cci0 {
+	vddio-supply = <&vreg_l1c_1p8>;
+};
+
+&cci1 {
+	vddio-supply = <&vreg_l1c_1p8>;
+};
