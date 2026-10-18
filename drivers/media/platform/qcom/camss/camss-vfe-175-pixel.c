@@ -9,6 +9,7 @@
 #include "camss-vfe.h"
 #include "camss-vfe-175-pixel.h"
 #include "camss-vfe-175-demosaic.h"
+#include "camss-vfe-175-cst.h"
 
 #define VFE_175_WB_GAIN_0		0x6fc
 #define VFE_175_WB_GAIN_1		0x700
@@ -102,14 +103,24 @@ const struct v4l2_isp_params_block_type_info vfe_175_params_info[2] = {
 int vfe_175_pixel_prepare(struct vfe_line *line)
 {
 	struct vfe_device *vfe = to_vfe(line);
-
+	struct vfe_175_cst_config cst;
 	int ret;
 
 	if (!line->is_pix)
 		return 0;
+	/* Reject unsupported output colorimetry before any processing MMIO. */
+	ret = vfe_175_cst_from_format(&line->output[0].video_out.active_fmt.fmt.pix_mp,
+				      &cst);
+	if (ret)
+		return ret;
 	ret = vfe_175_demosaic_prepare(line);
 	if (ret)
 		return ret;
+	ret = vfe_175_cst_configure(vfe, &cst);
+	if (ret) {
+		vfe_175_demosaic_stop(vfe);
+		return ret;
+	}
 	/* Reopening a line starts from neutral gains, then queued params apply. */
 	vfe->pixel175 = (struct vfe_175_pixel_state) {
 		.g_gain = 1024,
@@ -124,6 +135,7 @@ int vfe_175_pixel_prepare(struct vfe_line *line)
 
 void vfe_175_pixel_stop(struct vfe_device *vfe)
 {
+	vfe_175_cst_stop(vfe);
 	vfe_175_demosaic_stop(vfe);
 }
 
