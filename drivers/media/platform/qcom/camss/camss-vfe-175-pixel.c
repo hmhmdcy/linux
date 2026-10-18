@@ -10,6 +10,8 @@
 #include "camss-vfe-175-pixel.h"
 #include "camss-vfe-175-demosaic.h"
 #include "camss-vfe-175-cst.h"
+#include "camss-vfe-175-round.h"
+#include "camss-vfe-175-gamma.h"
 
 #define VFE_175_WB_GAIN_0		0x6fc
 #define VFE_175_WB_GAIN_1		0x700
@@ -104,6 +106,7 @@ int vfe_175_pixel_prepare(struct vfe_line *line)
 {
 	struct vfe_device *vfe = to_vfe(line);
 	struct vfe_175_cst_config cst;
+	struct vfe_175_gamma_config gamma;
 	int ret;
 
 	if (!line->is_pix)
@@ -113,14 +116,22 @@ int vfe_175_pixel_prepare(struct vfe_line *line)
 				      &cst);
 	if (ret)
 		return ret;
+	ret = vfe_175_gamma_from_format(&line->output[0].video_out.active_fmt.fmt.pix_mp,
+					&gamma);
+	if (ret)
+		return ret;
 	ret = vfe_175_demosaic_prepare(line);
 	if (ret)
 		return ret;
+	ret = vfe_175_gamma_configure(vfe, &gamma);
+	if (ret)
+		goto error;
 	ret = vfe_175_cst_configure(vfe, &cst);
-	if (ret) {
-		vfe_175_demosaic_stop(vfe);
-		return ret;
-	}
+	if (ret)
+		goto error;
+	ret = vfe_175_round_prepare(line);
+	if (ret)
+		goto error;
 	/* Reopening a line starts from neutral gains, then queued params apply. */
 	vfe->pixel175 = (struct vfe_175_pixel_state) {
 		.g_gain = 1024,
@@ -131,10 +142,16 @@ int vfe_175_pixel_prepare(struct vfe_line *line)
 	vfe_175_wb_write(vfe);
 
 	return 0;
+
+error:
+	vfe_175_pixel_stop(vfe);
+	return ret;
 }
 
 void vfe_175_pixel_stop(struct vfe_device *vfe)
 {
+	vfe_175_round_stop(vfe);
+	vfe_175_gamma_stop(vfe);
 	vfe_175_cst_stop(vfe);
 	vfe_175_demosaic_stop(vfe);
 }
