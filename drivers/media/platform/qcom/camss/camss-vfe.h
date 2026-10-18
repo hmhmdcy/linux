@@ -219,6 +219,7 @@ struct vfe_hw_ops {
 				 const struct v4l2_isp_buffer *params);
 
 	/* Output based API - new and shiny */
+	int (*vfe_output_prepare)(struct vfe_device *vfe, struct vfe_output *output);
 	void (*vfe_output_start)(struct vfe_device *vfe, struct vfe_output *output);
 	void (*vfe_output_stop)(struct vfe_device *vfe, struct vfe_output *output);
 	void (*vfe_output_buf_done)(struct vfe_device *vfe, struct vfe_output *output);
@@ -457,6 +458,8 @@ void vfe_add_ds(struct vfe_output *output, u8 pad, u8 bus_client,
 void vfe_add_stats(struct vfe_output *output, u8 bus_client, u8 comp_group);
 int vfe_alloc_stats(struct vfe_device *vfe, struct vfe_output *output);
 int vfe_params_prepare(struct camss_video *vid, struct camss_buffer *buf);
+int vfe_start_metadata_v2(struct camss_video *vid);
+void vfe_stop_metadata_v2(struct camss_video *vid);
 
 void vfe_add_params(struct vfe_output *output, u8 comp_group);
 

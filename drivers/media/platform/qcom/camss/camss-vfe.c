@@ -911,7 +911,13 @@ static int vfe_enable_one_output(struct vfe_line *line, struct vfe_output *outpu
 	struct vfe_device *vfe = to_vfe(line);
 	const struct vfe_hw_ops *ops = vfe->res->hw_ops;
 	unsigned int i;
+	int ret;
 
+	if (ops->vfe_output_prepare) {
+		ret = ops->vfe_output_prepare(vfe, output);
+		if (ret)
+			return ret;
+	}
 	if (output->state > VFE_OUTPUT_RESERVED) {
 		dev_err(vfe->camss->dev,
 			"Output is not in reserved state %d\n",
@@ -947,6 +953,56 @@ static int vfe_enable_one_output(struct vfe_line *line, struct vfe_output *outpu
 	}
 
 	return 0;
+}
+
+/* The image owns the line; metadata controls only its own DMA output. */
+int vfe_start_metadata_v2(struct camss_video *vid)
+{
+	struct vfe_output *output = container_of(vid, struct vfe_output, video_out);
+	struct vfe_line *line = output->line;
+	struct vfe_device *vfe = to_vfe(line);
+	unsigned long flags;
+	int ret = 0;
+
+	if (output->pad != MSM_VFE_PAD_SRC_STATS || !output->wm_num)
+		return 0;
+
+	spin_lock_irqsave(&vfe->output_lock, flags);
+	if (line->output[0].state == VFE_OUTPUT_ON) {
+		ret = vfe_enable_one_output(line, output);
+		if (!ret) {
+			output->sequence = line->output[0].sequence;
+			vfe->res->hw_ops->reg_update(vfe, line->id);
+		}
+	}
+	spin_unlock_irqrestore(&vfe->output_lock, flags);
+
+	return ret;
+}
+
+void vfe_stop_metadata_v2(struct camss_video *vid)
+{
+	struct vfe_output *output = container_of(vid, struct vfe_output, video_out);
+	struct vfe_line *line = output->line;
+	struct vfe_device *vfe = to_vfe(line);
+	const struct vfe_hw_ops *ops = vfe->res->hw_ops;
+	unsigned long flags;
+	unsigned int i;
+
+	if (output->pad != MSM_VFE_PAD_SRC_STATS || !output->wm_num)
+		return;
+
+	spin_lock_irqsave(&vfe->output_lock, flags);
+	if (output->state == VFE_OUTPUT_ON) {
+		if (ops->vfe_output_stop)
+			ops->vfe_output_stop(vfe, output);
+		else
+			for (i = 0; i < output->wm_num; i++)
+				ops->vfe_wm_stop(vfe, output->wm[i].bus_client, line);
+		output->state = VFE_OUTPUT_OFF;
+		ops->reg_update(vfe, line->id);
+	}
+	spin_unlock_irqrestore(&vfe->output_lock, flags);
 }
 
 int vfe_enable_output_v2(struct vfe_line *line)
@@ -2704,6 +2760,12 @@ static int vfe_register_meta_nodes(struct vfe_device *vfe,
 		char name[32];
 
 		if (output->pad == MSM_VFE_PAD_SRC_STATS && output->wm_num) {
+			/* Backends may declare statistics before allocating their DMA. */
+			if (!output->dma_vaddr) {
+				ret = vfe_alloc_stats(vfe, output);
+				if (ret)
+					return ret;
+			}
 			video->type = V4L2_BUF_TYPE_META_CAPTURE;
 			video->active_fmt.fmt.meta.dataformat =
 				V4L2_META_FMT_QCOM_ISP_STATS;
@@ -2888,6 +2950,8 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 	return 0;
 
 error_link:
+	/* Registration may already have published an earlier metadata node. */
+	vfe_unregister_meta_nodes(&vfe->line[i]);
 	msm_video_unregister(video_out);
 
 error_reg_video:

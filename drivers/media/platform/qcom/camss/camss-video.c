@@ -450,13 +450,23 @@ static int video_meta_buf_prepare(struct vb2_buffer *vb)
 
 static int video_meta_start_streaming(struct vb2_queue *q, unsigned int count)
 {
-	return 0;
+	struct camss_video *video = vb2_get_drv_priv(q);
+	int ret = 0;
+
+	if (video->ops->start_metadata)
+		ret = video->ops->start_metadata(video);
+	if (ret)
+		video->ops->flush_buffers(video, VB2_BUF_STATE_QUEUED);
+
+	return ret;
 }
 
 static void video_meta_stop_streaming(struct vb2_queue *q)
 {
 	struct camss_video *video = vb2_get_drv_priv(q);
 
+	if (video->ops->stop_metadata)
+		video->ops->stop_metadata(video);
 	video->ops->flush_buffers(video, VB2_BUF_STATE_ERROR);
 }
 

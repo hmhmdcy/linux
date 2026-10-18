@@ -42,6 +42,9 @@ struct camss_video_ops {
 	int (*prepare_buffer)(struct camss_video *vid, struct camss_buffer *buf);
 	/* Optional: validate capture DMA layout after its SG mappings are checked. */
 	int (*prepare_dma_buffer)(struct camss_video *vid, struct camss_buffer *buf);
+	/* Optional: start/stop a metadata output without restarting its image. */
+	int (*start_metadata)(struct camss_video *vid);
+	void (*stop_metadata)(struct camss_video *vid);
 };
 
 struct camss_video {
