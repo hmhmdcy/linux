@@ -803,6 +803,40 @@ static const struct v4l2_ioctl_ops msm_vid_ioctl_ops = {
 	.vidioc_s_input			= video_s_input,
 };
 
+/* Metadata output links are delegated here by the subdevice validator. */
+static int video_meta_out_link_validate(struct media_link *link)
+{
+	struct v4l2_subdev_format format = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		.pad = link->sink->index,
+	};
+	struct video_device *vdev;
+	struct camss_video *video;
+	struct v4l2_subdev *sink;
+	int ret;
+
+	if (!is_media_entity_v4l2_video_device(link->source->entity) ||
+	    !is_media_entity_v4l2_subdev(link->sink->entity))
+		return -EPIPE;
+
+	vdev = media_entity_to_video_device(link->source->entity);
+	video = container_of(vdev, struct camss_video, vdev);
+	if (video->type != V4L2_BUF_TYPE_META_OUTPUT ||
+	    link->source != &video->pad)
+		return -EPIPE;
+
+	sink = media_entity_to_v4l2_subdev(link->sink->entity);
+	ret = v4l2_subdev_call(sink, pad, get_fmt, NULL, &format);
+	if (ret)
+		return ret;
+
+	return format.format.code == MEDIA_BUS_FMT_METADATA_FIXED ? 0 : -EPIPE;
+}
+
+static const struct media_entity_operations msm_video_meta_out_entity_ops = {
+	.link_validate = video_meta_out_link_validate,
+};
+
 static int video_meta_enum_fmt(struct file *file, void *fh,
 			       struct v4l2_fmtdesc *f)
 {
@@ -973,6 +1007,7 @@ int msm_video_register(struct camss_video *video, struct v4l2_device *v4l2_dev,
 		goto error_vb2_init;
 	}
 
+	vdev->entity.ops = meta_out ? &msm_video_meta_out_entity_ops : NULL;
 	pad->flags = meta_out ? MEDIA_PAD_FL_SOURCE : MEDIA_PAD_FL_SINK;
 	ret = media_entity_pads_init(&vdev->entity, 1, pad);
 	if (ret < 0) {
