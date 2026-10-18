@@ -648,6 +648,14 @@ static void vfe_subdev_init_175(struct device *dev, struct vfe_device *vfe)
 	vfe_subdev_init(dev, vfe);
 	vfe->video_ops = vfe_video_ops_175;
 	vfe->isr_ops.comp_done = vfe_175_comp_done;
+	if (!vfe->res->is_lite && vfe->res->line_num > VFE_LINE_PIX) {
+		struct vfe_line *pix = &vfe->line[VFE_LINE_PIX];
+
+		vfe_add_yuv(&pix->output[0], 3, 4, 0);
+		vfe_set_pix(pix, 1);
+		/* Only sink and FULL are implemented; no DS or metadata pads yet. */
+		pix->num_pads = MSM_VFE_PAD_NUM_RDI;
+	}
 }
 
 static int vfe_line_prepare_175(struct vfe_line *line)

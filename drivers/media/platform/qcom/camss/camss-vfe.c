@@ -439,6 +439,15 @@ static u32 vfe_src_pad_code(struct vfe_line *line, u32 sink_code,
 			    unsigned int index, u32 src_req_code)
 {
 	struct vfe_device *vfe = to_vfe(line);
+	const struct camss_formats *out = vfe->res->formats_pix_out;
+	unsigned int i;
+
+	if (line->is_pix && out) {
+		for (i = 0; i < out->nformats; i++)
+			if (out->formats[i].code == src_req_code)
+				return src_req_code;
+		return index < out->nformats ? out->formats[index].code : 0;
+	}
 
 	switch (vfe->camss->res->version) {
 	case CAMSS_8x16:
@@ -1808,12 +1817,25 @@ static void vfe_try_format(struct vfe_line *line,
 			if (fmt->code == line->formats[i].code)
 				break;
 
-		/* If not found, use UYVY as default */
-		if (i >= line->nformats)
-			fmt->code = MEDIA_BUS_FMT_UYVY8_1X16;
+		/* A processed-only PIX input must fall back to a supported Bayer code. */
+		if (i >= line->nformats) {
+			if (line->is_pix && to_vfe(line)->res->formats_pix_out)
+				fmt->code = line->formats[0].code;
+			else
+				fmt->code = MEDIA_BUS_FMT_UYVY8_1X16;
+		}
 
 		fmt->width = clamp_t(u32, fmt->width, 1, 8191);
 		fmt->height = clamp_t(u32, fmt->height, 1, 8191);
+		if (line->is_pix && to_vfe(line)->res->pix_sink_frame_sizes) {
+			const struct v4l2_frmsize_stepwise *s =
+				to_vfe(line)->res->pix_sink_frame_sizes;
+
+			fmt->width = clamp_t(u32, fmt->width, s->min_width, s->max_width);
+			fmt->height = clamp_t(u32, fmt->height, s->min_height, s->max_height);
+			fmt->width -= (fmt->width - s->min_width) % s->step_width;
+			fmt->height -= (fmt->height - s->min_height) % s->step_height;
+		}
 
 		fmt->field = V4L2_FIELD_NONE;
 		fmt->colorspace = V4L2_COLORSPACE_SRGB;
@@ -1903,6 +1925,20 @@ static void vfe_try_compose(struct vfe_line *line,
 
 	if (rect->height < 4)
 		rect->height = 4;
+
+	if (to_vfe(line)->res->pix_frame_sizes) {
+		const struct v4l2_frmsize_stepwise *s = to_vfe(line)->res->pix_frame_sizes;
+
+		rect->width = clamp_t(u32, rect->width, s->min_width, s->max_width);
+		rect->height = clamp_t(u32, rect->height, s->min_height, s->max_height);
+		rect->width -= (rect->width - s->min_width) % s->step_width;
+		rect->height -= (rect->height - s->min_height) % s->step_height;
+	}
+	/* Compose describes scaling of the full input, not a crop origin. */
+	if (to_vfe(line)->res->pix_no_crop) {
+		rect->left = 0;
+		rect->top = 0;
+	}
 }
 
 /*
@@ -1920,6 +1956,11 @@ static void vfe_try_crop(struct vfe_line *line,
 	struct v4l2_rect *compose;
 
 	compose = __vfe_get_compose(line, sd_state, which);
+
+	if (to_vfe(line)->res->pix_no_crop) {
+		*rect = *compose;
+		return;
+	}
 
 	if (rect->width > compose->width)
 		rect->width = compose->width;
@@ -2787,6 +2828,11 @@ int msm_vfe_register_entities(struct vfe_device *vfe,
 
 		video_out->nformats = vfe->line[i].nformats;
 		video_out->formats = vfe->line[i].formats;
+		if (vfe->line[i].is_pix && vfe->res->formats_pix_out) {
+			video_out->nformats = vfe->res->formats_pix_out->nformats;
+			video_out->formats = vfe->res->formats_pix_out->formats;
+			video_out->frame_sizes = vfe->res->pix_frame_sizes;
+		}
 
 		snprintf(name, ARRAY_SIZE(name), "%s%d_%s%d",
 			 MSM_VFE_NAME, vfe->id, "video", i);

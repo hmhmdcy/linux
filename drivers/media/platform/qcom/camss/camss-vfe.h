@@ -246,6 +246,11 @@ struct vfe_subdev_resources {
 	const struct vfe_hw_ops *hw_ops;
 	const struct camss_formats *formats_rdi;
 	const struct camss_formats *formats_pix;
+	/* Optional processed output formats, separate from PIX sink formats. */
+	const struct camss_formats *formats_pix_out;
+	const struct v4l2_frmsize_stepwise *pix_sink_frame_sizes;
+	const struct v4l2_frmsize_stepwise *pix_frame_sizes;
+	bool pix_no_crop;
 };
 
 struct vfe_device {
@@ -346,6 +351,10 @@ extern const struct camss_formats vfe_formats_rdi_8x96;
 extern const struct camss_formats vfe_formats_pix_8x96;
 extern const struct camss_formats vfe_formats_rdi_845;
 extern const struct camss_formats vfe_formats_pix_845;
+extern const struct camss_formats vfe_formats_pix_175;
+extern const struct camss_formats vfe_formats_pix_out_175;
+extern const struct v4l2_frmsize_stepwise vfe_frame_sizes_pix_175;
+extern const struct v4l2_frmsize_stepwise vfe_frame_sizes_pix_sink_175;
 
 extern const struct vfe_hw_ops vfe_ops_4_1;
 extern const struct vfe_hw_ops vfe_ops_4_7;

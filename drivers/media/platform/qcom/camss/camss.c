@@ -2120,12 +2120,16 @@ static const struct camss_subdev_resources vfe_res_8150[] = {
 		.reg = { "vfe0" },
 		.interrupt = { "vfe0" },
 		.vfe = {
-			.line_num = 3,
+			.line_num = 4,
 			.pd_name = "ife0",
 			.has_pd = true,
 			.hw_ops = &vfe_ops_175,
 			.formats_rdi = &vfe_formats_rdi_845,
-			.formats_pix = &vfe_formats_rdi_845
+			.formats_pix = &vfe_formats_pix_175,
+			.formats_pix_out = &vfe_formats_pix_out_175,
+			.pix_sink_frame_sizes = &vfe_frame_sizes_pix_sink_175,
+			.pix_frame_sizes = &vfe_frame_sizes_pix_175,
+			.pix_no_crop = true
 		}
 	},
 
@@ -2149,12 +2153,16 @@ static const struct camss_subdev_resources vfe_res_8150[] = {
 		.reg = { "vfe1" },
 		.interrupt = { "vfe1" },
 		.vfe = {
-			.line_num = 3,
+			.line_num = 4,
 			.pd_name = "ife1",
 			.has_pd = true,
 			.hw_ops = &vfe_ops_175,
 			.formats_rdi = &vfe_formats_rdi_845,
-			.formats_pix = &vfe_formats_rdi_845
+			.formats_pix = &vfe_formats_pix_175,
+			.formats_pix_out = &vfe_formats_pix_out_175,
+			.pix_sink_frame_sizes = &vfe_frame_sizes_pix_sink_175,
+			.pix_frame_sizes = &vfe_frame_sizes_pix_175,
+			.pix_no_crop = true
 		}
 	},
 };

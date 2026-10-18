@@ -3,6 +3,7 @@
 
 #include <linux/io.h>
 #include <linux/limits.h>
+#include <linux/media-bus-format.h>
 
 #include "camss.h"
 #include "camss-vfe.h"
@@ -31,6 +32,76 @@
 #define VFE_175_WM_FRAME_INC(n)              (0x2258 + (n) * 0x100)
 #define VFE_175_WM_BURST_LIMIT(n)            (0x225c + (n) * 0x100)
 #define VFE_175_PACKER_NV12                  0xe
+
+/* Input and output format sets describe different sides of the ISP. */
+static const struct camss_format_info formats_pix_175[] = {
+	{ MEDIA_BUS_FMT_SBGGR8_1X8, 8, V4L2_PIX_FMT_SBGGR8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SGBRG8_1X8, 8, V4L2_PIX_FMT_SGBRG8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SGRBG8_1X8, 8, V4L2_PIX_FMT_SGRBG8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SRGGB8_1X8, 8, V4L2_PIX_FMT_SRGGB8, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 8) },
+	{ MEDIA_BUS_FMT_SBGGR10_1X10, 10, V4L2_PIX_FMT_SBGGR10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SGBRG10_1X10, 10, V4L2_PIX_FMT_SGBRG10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SGRBG10_1X10, 10, V4L2_PIX_FMT_SGRBG10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SRGGB10_1X10, 10, V4L2_PIX_FMT_SRGGB10P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 10) },
+	{ MEDIA_BUS_FMT_SBGGR12_1X12, 12, V4L2_PIX_FMT_SBGGR12P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 12) },
+	{ MEDIA_BUS_FMT_SGBRG12_1X12, 12, V4L2_PIX_FMT_SGBRG12P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 12) },
+	{ MEDIA_BUS_FMT_SGRBG12_1X12, 12, V4L2_PIX_FMT_SGRBG12P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 12) },
+	{ MEDIA_BUS_FMT_SRGGB12_1X12, 12, V4L2_PIX_FMT_SRGGB12P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 12) },
+	{ MEDIA_BUS_FMT_SBGGR14_1X14, 14, V4L2_PIX_FMT_SBGGR14P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 14) },
+	{ MEDIA_BUS_FMT_SGBRG14_1X14, 14, V4L2_PIX_FMT_SGBRG14P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 14) },
+	{ MEDIA_BUS_FMT_SGRBG14_1X14, 14, V4L2_PIX_FMT_SGRBG14P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 14) },
+	{ MEDIA_BUS_FMT_SRGGB14_1X14, 14, V4L2_PIX_FMT_SRGGB14P, 1,
+	  PER_PLANE_DATA(0, 1, 1, 1, 1, 14) },
+};
+
+static const struct camss_format_info formats_pix_out_175[] = {
+	{ MEDIA_BUS_FMT_UYVY8_1_5X8, 8, V4L2_PIX_FMT_NV12, 1,
+	  PER_PLANE_DATA(0, 1, 1, 2, 3, 8) },
+};
+
+const struct camss_formats vfe_formats_pix_175 = {
+	.nformats = ARRAY_SIZE(formats_pix_175),
+	.formats = formats_pix_175,
+};
+
+const struct camss_formats vfe_formats_pix_out_175 = {
+	.nformats = ARRAY_SIZE(formats_pix_out_175),
+	.formats = formats_pix_out_175,
+};
+
+/* Preserve the common 8191 software ceiling, aligned to Bayer pairs. */
+const struct v4l2_frmsize_stepwise vfe_frame_sizes_pix_sink_175 = {
+	.min_width = 16,
+	.max_width = 8190,
+	.step_width = 2,
+	.min_height = 4,
+	.max_height = 8190,
+	.step_height = 2,
+};
+
+const struct v4l2_frmsize_stepwise vfe_frame_sizes_pix_175 = {
+	.min_width = 16,
+	.max_width = VFE_175_FULL_MAX_WIDTH,
+	.step_width = 16,
+	.min_height = 4,
+	.max_height = VFE_175_FULL_MAX_HEIGHT,
+	.step_height = 2,
+};
 
 int vfe_175_validate_output(const struct vfe_output *output)
 {
