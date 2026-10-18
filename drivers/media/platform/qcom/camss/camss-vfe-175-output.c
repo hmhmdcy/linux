@@ -112,10 +112,20 @@ int vfe_175_validate_output(const struct vfe_output *output)
 	/* One single-IFE FULL image, fixed Y/C clients and composite group zero. */
 	if (!output->line->is_pix || output->pad != MSM_VFE_PAD_SRC ||
 	    output != &output->line->output[0] || output->wm_num != 2 ||
-	    output->comp_group != 0 || output->line->num_outputs != 1 ||
+	    output->comp_group != 0 ||
 	    output->wm[0].bus_client != VFE_175_FULL_Y || output->wm[0].plane != 0 ||
 	    output->wm[1].bus_client != VFE_175_FULL_C || output->wm[1].plane != 1)
 		return -EINVAL;
+	/* Parameters have no write masters and do not add a second image. */
+	if (output->line->num_outputs == 2) {
+		const struct vfe_output *params = &output->line->output[1];
+
+		if (params->pad != MSM_VFE_PAD_SINK_PARAMS || params->wm_num)
+			return -EINVAL;
+	} else if (output->line->num_outputs != 1) {
+		return -EINVAL;
+	}
+
 	if (pix->pixelformat != V4L2_PIX_FMT_NV12 || pix->num_planes != 1 ||
 	    !pix->width || !pix->height || (pix->width & 1) || (pix->height & 1) ||
 	    pix->width > VFE_175_FULL_MAX_WIDTH ||
