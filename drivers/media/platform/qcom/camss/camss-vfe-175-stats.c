@@ -12,6 +12,14 @@
 
 #define VFE_175_STATS_ENABLE             0x044
 #define VFE_175_BHIST_ENABLE             BIT(4)
+#define VFE_175_STATS_CGC                0x030
+#define VFE_175_DMI_CONFIG               0xc24
+#define VFE_175_DMI_ADDRESS              0xc28
+#define VFE_175_DMI_DATA_LOW             0xc30
+#define VFE_175_DMI_RAM_SELECT           GENMASK(6, 0)
+#define VFE_175_DMI_AUTO_INCREMENT       BIT(8)
+#define VFE_175_DMI_AUTO_LOAD            BIT(12)
+#define VFE_175_DMI_BHIST_RAM            0x3a
 #define VFE_175_STATS_CONFIG             0xaac
 #define VFE_175_BHIST_UNIFORM            BIT(4)
 #define VFE_175_BHIST_CHANNEL            GENMASK(23, 21)
@@ -36,6 +44,32 @@ static struct vfe_output *vfe_175_stats_output(struct vfe_line *line)
 			return &line->output[i];
 
 	return NULL;
+}
+
+/* The register reset does not initialize the histogram counter SRAM. */
+static void vfe_175_bhist_clear(struct vfe_device *vfe)
+{
+	u32 cgc = readl_relaxed(vfe->base + VFE_175_STATS_CGC);
+	u32 config = readl_relaxed(vfe->base + VFE_175_DMI_CONFIG);
+	u32 address = readl_relaxed(vfe->base + VFE_175_DMI_ADDRESS);
+	u32 select;
+	unsigned int i;
+
+	/* Pre-stream setup owns DMI; keep the SRAM clock on during CPU access. */
+	writel(cgc | VFE_175_BHIST_ENABLE, vfe->base + VFE_175_STATS_CGC);
+	select = config & ~(VFE_175_DMI_RAM_SELECT |
+			    VFE_175_DMI_AUTO_INCREMENT | VFE_175_DMI_AUTO_LOAD);
+	writel(select | VFE_175_DMI_BHIST_RAM, vfe->base + VFE_175_DMI_CONFIG);
+	for (i = 0; i < CAMSS_STATS_BHIST_BINS; i++) {
+		/* Explicit indices avoid inheriting another DMI user's mode. */
+		writel(i, vfe->base + VFE_175_DMI_ADDRESS);
+		writel(0, vfe->base + VFE_175_DMI_DATA_LOW);
+	}
+	/* Complete SRAM writes before restoring shared state and clock policy. */
+	readl(vfe->base + VFE_175_DMI_CONFIG);
+	writel(config, vfe->base + VFE_175_DMI_CONFIG);
+	writel(address, vfe->base + VFE_175_DMI_ADDRESS);
+	writel(cgc, vfe->base + VFE_175_STATS_CGC);
 }
 
 static void vfe_175_bhist_write(struct vfe_device *vfe, struct vfe_line *line)
@@ -122,8 +156,10 @@ int vfe_175_stats_prepare(struct vfe_line *line)
 		.height = valid ? height : 0,
 		.enabled = valid,
 	};
-	if (valid)
+	if (valid) {
+		vfe_175_bhist_clear(vfe);
 		vfe_175_bhist_write(vfe, line);
+	}
 
 	return 0;
 }
