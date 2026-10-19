@@ -141,7 +141,7 @@ void vfe_175_lsc_params(struct vfe_device *vfe,
 	dmi_addr = readl_relaxed(vfe->base + DMI_ADDR);
 	cgc = readl_relaxed(vfe->base + LENS_CGC_OVERRIDE);
 	writel(cgc | LSC_ENABLE, vfe->base + LENS_CGC_OVERRIDE);
-	/* output_lock serializes parameters; Gamma only uses DMI before PIX starts. */
+	/* output_lock serializes this shared DMI transaction with Gamma. */
 	for (table = 0; table < 2; table++) {
 		u32 selector = (bank ? 18 : 14) + table;
 

@@ -7,6 +7,8 @@
 #define VFE_175_GAMMA_ENTRIES 64
 #define VFE_175_GAMMA_POINTS (VFE_175_GAMMA_ENTRIES + 1)
 
+struct device;
+struct v4l2_isp_block_header;
 struct vfe_device;
 struct v4l2_pix_format_mplane;
 
@@ -20,6 +22,10 @@ int vfe_175_gamma_from_format(const struct v4l2_pix_format_mplane *pix,
 			      struct vfe_175_gamma_config *config);
 int vfe_175_gamma_configure(struct vfe_device *vfe,
 			   const struct vfe_175_gamma_config *config);
+int vfe_175_gamma_validate(struct device *dev,
+			   const struct v4l2_isp_block_header *block);
+void vfe_175_gamma_params(struct vfe_device *vfe,
+			  const struct v4l2_isp_block_header *block);
 void vfe_175_gamma_stop(struct vfe_device *vfe);
 
 #endif /* CAMSS_VFE_175_GAMMA_H */

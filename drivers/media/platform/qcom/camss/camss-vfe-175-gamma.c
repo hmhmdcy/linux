@@ -3,6 +3,7 @@
 
 #include <linux/bitfield.h>
 #include <linux/io.h>
+#include <linux/qcom-camss-config.h>
 #include <linux/videodev2.h>
 
 #include "camss.h"
@@ -108,14 +109,59 @@ static int vfe_175_gamma_pack(const struct vfe_175_gamma_config *config,
 	return 0;
 }
 
-int vfe_175_gamma_configure(struct vfe_device *vfe,
-			   const struct vfe_175_gamma_config *config)
+static void vfe_175_gamma_enable(struct vfe_device *vfe, bool enable)
+{
+	u32 value = readl_relaxed(vfe->base + VFE_175_COLOR_ENABLE);
+
+	value &= ~VFE_175_COLOR_GAMMA;
+	if (enable)
+		value |= VFE_175_COLOR_GAMMA;
+	writel_relaxed(value, vfe->base + VFE_175_COLOR_ENABLE);
+}
+
+static void vfe_175_gamma_upload(struct vfe_device *vfe,
+				 const u32 packed[3][VFE_175_GAMMA_ENTRIES])
 {
 	/* LUT_CFG banks are R/G/B; DMI memory selectors are R30/G26/B28. */
 	static const u8 selectors[3] = { 30, 26, 28 };
-	u32 packed[3][VFE_175_GAMMA_ENTRIES];
-	u32 lut_cfg, dmi_cfg, dmi_addr, cgc_override, value;
+	u32 lut_cfg, dmi_cfg, dmi_addr, cgc_override;
 	unsigned int ch, i;
+
+	lut_cfg = readl_relaxed(vfe->base + VFE_175_RGB_LUT_CFG);
+	dmi_cfg = readl_relaxed(vfe->base + VFE_175_DMI_CFG);
+	dmi_addr = readl_relaxed(vfe->base + VFE_175_DMI_ADDR);
+	/* SRAM access also needs the clock when no pixels are arriving yet. */
+	cgc_override = readl_relaxed(vfe->base + VFE_175_COLOR_CGC_OVERRIDE);
+	writel(cgc_override | VFE_175_COLOR_GAMMA,
+	       vfe->base + VFE_175_COLOR_CGC_OVERRIDE);
+	for (ch = 0; ch < 3; ch++) {
+		u32 bank = !(lut_cfg & BIT(ch));
+		u32 select = selectors[ch] + bank;
+
+		/* Pre-stream setup or output_lock owns this shared DMI transaction. */
+		writel((dmi_cfg & ~VFE_175_DMI_SELECT) | select,
+		       vfe->base + VFE_175_DMI_CFG);
+		for (i = 0; i < VFE_175_GAMMA_ENTRIES; i++) {
+			/* Explicit indices avoid depending on the auto-increment mode. */
+			writel(i, vfe->base + VFE_175_DMI_ADDR);
+			writel(packed[ch][i], vfe->base + VFE_175_DMI_DATA_LO);
+		}
+	}
+	/* Restore shared DMI state before publishing the newly filled banks. */
+	writel(dmi_cfg, vfe->base + VFE_175_DMI_CFG);
+	writel(dmi_addr, vfe->base + VFE_175_DMI_ADDR);
+	/* Complete all LUT writes before changing the bank selection. */
+	wmb();
+	writel_relaxed(lut_cfg ^ VFE_175_RGB_LUT_BANKS,
+		       vfe->base + VFE_175_RGB_LUT_CFG);
+	/* Complete the bank switch before returning to the saved clock policy. */
+	writel(cgc_override, vfe->base + VFE_175_COLOR_CGC_OVERRIDE);
+}
+
+int vfe_175_gamma_configure(struct vfe_device *vfe,
+			   const struct vfe_175_gamma_config *config)
+{
+	u32 packed[3][VFE_175_GAMMA_ENTRIES];
 	int ret;
 
 	if (!vfe_175_gamma_supported(vfe))
@@ -123,55 +169,75 @@ int vfe_175_gamma_configure(struct vfe_device *vfe,
 	ret = vfe_175_gamma_pack(config, packed);
 	if (ret)
 		return ret;
-	if (config->enabled) {
-		lut_cfg = readl_relaxed(vfe->base + VFE_175_RGB_LUT_CFG);
-		dmi_cfg = readl_relaxed(vfe->base + VFE_175_DMI_CFG);
-		dmi_addr = readl_relaxed(vfe->base + VFE_175_DMI_ADDR);
-		/* SRAM access also needs the clock when no pixels are arriving yet. */
-		cgc_override = readl_relaxed(vfe->base + VFE_175_COLOR_CGC_OVERRIDE);
-		writel(cgc_override | VFE_175_COLOR_GAMMA,
-		       vfe->base + VFE_175_COLOR_CGC_OVERRIDE);
-		for (ch = 0; ch < 3; ch++) {
-			u32 bank = !(lut_cfg & BIT(ch));
-			u32 select = selectors[ch] + bank;
-
-			/* Caller owns pre-stream setup; no concurrent DMI consumer yet. */
-			writel((dmi_cfg & ~VFE_175_DMI_SELECT) | select,
-			       vfe->base + VFE_175_DMI_CFG);
-			for (i = 0; i < VFE_175_GAMMA_ENTRIES; i++) {
-				/* Explicit indices avoid depending on the auto-increment mode. */
-				writel(i, vfe->base + VFE_175_DMI_ADDR);
-				writel(packed[ch][i], vfe->base + VFE_175_DMI_DATA_LO);
-			}
-		}
-		/* Restore shared DMI state before publishing the newly filled banks. */
-		writel(dmi_cfg, vfe->base + VFE_175_DMI_CFG);
-		writel(dmi_addr, vfe->base + VFE_175_DMI_ADDR);
-		/* Complete all LUT writes before changing the bank selection. */
-		wmb();
-		writel_relaxed(lut_cfg ^ VFE_175_RGB_LUT_BANKS,
-			       vfe->base + VFE_175_RGB_LUT_CFG);
-		/* Complete the bank switch before returning to the saved clock policy. */
-		writel(cgc_override, vfe->base + VFE_175_COLOR_CGC_OVERRIDE);
-	}
+	if (config->enabled)
+		vfe_175_gamma_upload(vfe, packed);
 	/* Publish the bank/configuration before enabling Gamma; no PIX RUP. */
 	wmb();
-	value = readl_relaxed(vfe->base + VFE_175_COLOR_ENABLE);
-	value &= ~VFE_175_COLOR_GAMMA;
-	if (config->enabled)
-		value |= VFE_175_COLOR_GAMMA;
-	writel_relaxed(value, vfe->base + VFE_175_COLOR_ENABLE);
-
+	vfe->pixel175.gamma_enabled = config->enabled;
+	vfe_175_gamma_enable(vfe, config->enabled);
 	return 0;
+}
+
+int vfe_175_gamma_validate(struct device *dev,
+			   const struct v4l2_isp_block_header *block)
+{
+	const struct camss_params_ife_gamma *gamma;
+	unsigned int ch, i;
+
+	if (block->flags & ~(V4L2_ISP_PARAMS_FL_BLOCK_ENABLE |
+			     V4L2_ISP_PARAMS_FL_BLOCK_DISABLE) ||
+	    block->flags == (V4L2_ISP_PARAMS_FL_BLOCK_ENABLE |
+			     V4L2_ISP_PARAMS_FL_BLOCK_DISABLE))
+		return -EINVAL;
+	if (block->flags & V4L2_ISP_PARAMS_FL_BLOCK_DISABLE)
+		return 0;
+	gamma = container_of(block, struct camss_params_ife_gamma, header);
+	for (ch = 0; ch < CAMSS_IFE_GAMMA_CHANNELS; ch++)
+		for (i = 0; i < CAMSS_IFE_GAMMA_SEGMENTS; i++) {
+			const struct camss_ife_gamma_segment *segment =
+				&gamma->segments[ch][i];
+
+			if (segment->base > 1023 || segment->delta < -512 ||
+			    segment->delta > 511)
+				return -EINVAL;
+		}
+	return 0;
+}
+
+void vfe_175_gamma_params(struct vfe_device *vfe,
+			  const struct v4l2_isp_block_header *block)
+{
+	const struct camss_params_ife_gamma *gamma;
+	u32 packed[3][VFE_175_GAMMA_ENTRIES];
+	unsigned int ch, i;
+
+	if (block->flags & V4L2_ISP_PARAMS_FL_BLOCK_DISABLE) {
+		vfe->pixel175.gamma_enabled = false;
+		vfe_175_gamma_enable(vfe, false);
+		return;
+	}
+	gamma = container_of(block, struct camss_params_ife_gamma, header);
+	for (ch = 0; ch < CAMSS_IFE_GAMMA_CHANNELS; ch++)
+		for (i = 0; i < CAMSS_IFE_GAMMA_SEGMENTS; i++) {
+			const struct camss_ife_gamma_segment *segment =
+				&gamma->segments[ch][i];
+
+			packed[ch][i] = segment->base |
+				((u32)segment->delta & 0x3ff) << 10;
+		}
+	/* The normal parameter queue serializes this with LSC and issues PIX RUP. */
+	vfe_175_gamma_upload(vfe, packed);
+	if (block->flags & V4L2_ISP_PARAMS_FL_BLOCK_ENABLE)
+		vfe->pixel175.gamma_enabled = true;
+	/* Publish the completed LUT bank before its enable state. */
+	wmb();
+	vfe_175_gamma_enable(vfe, vfe->pixel175.gamma_enabled);
 }
 
 void vfe_175_gamma_stop(struct vfe_device *vfe)
 {
-	u32 value;
-
 	if (!vfe_175_gamma_supported(vfe))
 		return;
-	value = readl_relaxed(vfe->base + VFE_175_COLOR_ENABLE);
-	writel_relaxed(value & ~VFE_175_COLOR_GAMMA,
-		       vfe->base + VFE_175_COLOR_ENABLE);
+	vfe->pixel175.gamma_enabled = false;
+	vfe_175_gamma_enable(vfe, false);
 }

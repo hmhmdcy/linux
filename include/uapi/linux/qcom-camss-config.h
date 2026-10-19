@@ -26,6 +26,8 @@
  * @CAMSS_PARAMS_GAMMA: per-channel gamma correction curves (CLC_GLUT),
  *	&struct camss_params_gamma
  * @CAMSS_PARAMS_LSC: regular lens shading mesh, &struct camss_params_lsc
+ * @CAMSS_PARAMS_IFE_GAMMA: segmented IFE RGB gamma,
+ *	&struct camss_params_ife_gamma
  * @CAMSS_PARAMS_AEC_BHIST: region of the AEC Bayer histogram statistics,
  *	&struct camss_params_aec_bhist
  */
@@ -36,6 +38,7 @@ enum camss_params_block_type {
 	CAMSS_PARAMS_GAMMA = 4,
 	CAMSS_PARAMS_AEC_BHIST = 5,
 	CAMSS_PARAMS_LSC = 6,
+	CAMSS_PARAMS_IFE_GAMMA = 7,
 };
 
 /* Number of entries in each gamma channel LUT. */
@@ -280,6 +283,43 @@ struct camss_params_lsc {
 
 #define CAMSS_PARAMS_IFE_COLOR_MAX_PAYLOAD \
 	(CAMSS_PARAMS_IFE_LSC_MAX_PAYLOAD + sizeof(struct camss_params_color_correct))
+
+/* IFE Gamma uses uniformly spaced segments, unlike the OPE direct LUT. */
+#define CAMSS_IFE_GAMMA_CHANNELS 3
+#define CAMSS_IFE_GAMMA_SEGMENTS 64
+
+/**
+ * struct camss_ife_gamma_segment - one linear segment in a 10-bit output domain
+ * @base: output at the segment's lower endpoint, 0 through 1023
+ * @delta: signed output change over the segment, -512 through 511
+ *
+ * Each segment covers 1/64 of the full input range. The last delta describes
+ * the change toward the full-scale endpoint, which may reach 1024. Segments
+ * are independent: no continuity or monotonicity is imposed by this ABI.
+ */
+struct camss_ife_gamma_segment {
+	__u16 base;
+	__s16 delta;
+};
+
+/**
+ * struct camss_params_ife_gamma - segmented RGB gamma curves for IFE
+ * @header: block header; type is CAMSS_PARAMS_IFE_GAMMA
+ * @segments: 64 segments per channel, in R, G, B channel order
+ *
+ * ENABLE uploads and enables. With neither flag, upload retains the current
+ * enable state. DISABLE accepts a header-only block and leaves stored curves
+ * intact. Reopening a stream restores its format's initial transfer curve.
+ */
+struct camss_params_ife_gamma {
+	struct v4l2_isp_params_block_header header;
+	struct camss_ife_gamma_segment
+		segments[CAMSS_IFE_GAMMA_CHANNELS][CAMSS_IFE_GAMMA_SEGMENTS];
+} __attribute__((aligned(8)));
+
+#define CAMSS_PARAMS_IFE_GAMMA_MAX_PAYLOAD \
+	(CAMSS_PARAMS_IFE_COLOR_MAX_PAYLOAD + sizeof(struct camss_params_ife_gamma))
+
 
 /**
  * enum camss_stats_block_type - CAMSS ISP statistics block identifiers
