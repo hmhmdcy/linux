@@ -214,6 +214,9 @@ struct vfe_hw_ops {
 	 * block type, and how to apply a validated parameters buffer. Applying
 	 * runs with output_lock held, ahead of a reg update.
 	 */
+	unsigned int params_max_payload;
+	int (*params_validate)(struct vfe_line *line,
+			       const struct v4l2_isp_buffer *params);
 	const struct v4l2_isp_params_block_type_info *params_info;
 	unsigned int params_num_types;
 	void (*vfe_params_apply)(struct vfe_device *vfe, struct vfe_line *line,

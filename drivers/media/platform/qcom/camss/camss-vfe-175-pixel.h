@@ -18,10 +18,12 @@ struct vfe_175_pixel_state {
 	u16 r_gain;
 	u16 black_level;
 	bool wb_enabled;
+	bool lsc_enabled;
+	u8 lsc_bank;
 	struct vfe_175_stats_state stats;
 };
 
-extern const struct v4l2_isp_params_block_type_info vfe_175_params_info[6];
+extern const struct v4l2_isp_params_block_type_info vfe_175_params_info[7];
 int vfe_175_pixel_prepare(struct vfe_line *line);
 void vfe_175_pixel_stop(struct vfe_device *vfe);
 void vfe_175_params_apply(struct vfe_device *vfe, struct vfe_line *line,

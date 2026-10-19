@@ -12,6 +12,7 @@
 #include "camss-vfe-175-cst.h"
 #include "camss-vfe-175-round.h"
 #include "camss-vfe-175-gamma.h"
+#include "camss-vfe-175-lsc.h"
 #include "camss-vfe-175-demux.h"
 #include "camss-vfe-175-mnds.h"
 
@@ -143,7 +144,7 @@ static int vfe_175_params_unsupported(struct device *dev,
 	return -EINVAL;
 }
 
-const struct v4l2_isp_params_block_type_info vfe_175_params_info[6] = {
+const struct v4l2_isp_params_block_type_info vfe_175_params_info[7] = {
 	[0] = {
 		.size = sizeof(struct v4l2_isp_block_header),
 		.block_validate = vfe_175_params_unsupported,
@@ -163,6 +164,10 @@ const struct v4l2_isp_params_block_type_info vfe_175_params_info[6] = {
 	[CAMSS_PARAMS_GAMMA] = {
 		.size = sizeof(struct camss_params_gamma),
 		.block_validate = vfe_175_params_unsupported,
+	},
+	[CAMSS_PARAMS_LSC] = {
+		.size = sizeof(struct camss_params_lsc),
+		.block_validate = vfe_175_lsc_validate,
 	},
 	[CAMSS_PARAMS_AEC_BHIST] = {
 		.size = sizeof(struct camss_params_aec_bhist),
@@ -222,6 +227,7 @@ int vfe_175_pixel_prepare(struct vfe_line *line)
 		.wb_enabled = true,
 	};
 	vfe_175_wb_write(vfe);
+	vfe_175_lsc_init(vfe);
 	ret = vfe_175_stats_prepare(line);
 	if (ret)
 		goto error;
@@ -236,6 +242,7 @@ error:
 void vfe_175_pixel_stop(struct vfe_device *vfe)
 {
 	vfe_175_blc_enable(vfe, false);
+	vfe_175_lsc_stop(vfe);
 	vfe_175_round_stop(vfe);
 	vfe_175_mnds_stop(vfe);
 	vfe_175_gamma_stop(vfe);
@@ -257,6 +264,11 @@ void vfe_175_params_apply(struct vfe_device *vfe, struct vfe_line *line,
 			(const void *)&params->data[offset];
 		const struct camss_params_wb_gain *wb;
 
+		if (block->type == CAMSS_PARAMS_LSC) {
+			vfe_175_lsc_params(vfe, block);
+			offset += block->size;
+			continue;
+		}
 		if (block->type == CAMSS_PARAMS_AEC_BHIST) {
 			vfe_175_stats_params(vfe, line, block);
 			offset += block->size;

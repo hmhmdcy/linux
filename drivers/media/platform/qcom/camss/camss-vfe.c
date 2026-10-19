@@ -711,9 +711,12 @@ int vfe_params_prepare(struct camss_video *vid, struct camss_buffer *buf)
 	if (ret)
 		return ret;
 
-	return v4l2_isp_params_validate_buffer(vfe->camss->dev, vb, buf->meta,
-					       ops->params_info,
-					       ops->params_num_types);
+	ret = v4l2_isp_params_validate_buffer(vfe->camss->dev, vb, buf->meta,
+					      ops->params_info,
+					      ops->params_num_types);
+	if (ret)
+		return ret;
+	return ops->params_validate ? ops->params_validate(output->line, buf->meta) : 0;
 }
 
 static struct vfe_output *vfe_params_output(struct vfe_line *line)
@@ -2964,7 +2967,8 @@ static int vfe_register_meta_nodes(struct vfe_device *vfe,
 			video->active_fmt.fmt.meta.dataformat =
 				V4L2_META_FMT_QCOM_ISP_PARAMS;
 			video->active_fmt.fmt.meta.buffersize =
-				v4l2_isp_buffer_size(CAMSS_PARAMS_IFE_MAX_PAYLOAD);
+				v4l2_isp_buffer_size(vfe->res->hw_ops->params_max_payload ?:
+					     CAMSS_PARAMS_IFE_MAX_PAYLOAD);
 			suffix = "params";
 		} else {
 			continue;

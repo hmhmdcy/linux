@@ -25,6 +25,7 @@
  *	&struct camss_params_color_correct
  * @CAMSS_PARAMS_GAMMA: per-channel gamma correction curves (CLC_GLUT),
  *	&struct camss_params_gamma
+ * @CAMSS_PARAMS_LSC: regular lens shading mesh, &struct camss_params_lsc
  * @CAMSS_PARAMS_AEC_BHIST: region of the AEC Bayer histogram statistics,
  *	&struct camss_params_aec_bhist
  */
@@ -34,6 +35,7 @@ enum camss_params_block_type {
 	CAMSS_PARAMS_COLOR_CORRECT = 3,
 	CAMSS_PARAMS_GAMMA = 4,
 	CAMSS_PARAMS_AEC_BHIST = 5,
+	CAMSS_PARAMS_LSC = 6,
 };
 
 /* Number of entries in each gamma channel LUT. */
@@ -237,6 +239,44 @@ struct camss_params_aec_bhist {
 #define CAMSS_PARAMS_IFE_MAX_PAYLOAD		\
 	(sizeof(struct camss_params_aec_bhist) +	\
 	 sizeof(struct camss_params_wb_gain))
+
+/* Fixed mesh, expressed in Bayer input coordinates before image scaling. */
+#define CAMSS_LSC_MESH_WIDTH	17
+#define CAMSS_LSC_MESH_HEIGHT	13
+#define CAMSS_LSC_MESH_POINTS	(CAMSS_LSC_MESH_WIDTH * CAMSS_LSC_MESH_HEIGHT)
+#define CAMSS_LSC_CHANNELS	4
+
+/**
+ * struct camss_params_lsc - Lens shading correction mesh
+ *
+ * @header: block header; type is CAMSS_PARAMS_LSC
+ * @cell_width: horizontal mesh cell spacing, in 2-pixel Bayer quads
+ * @cell_height: vertical mesh cell spacing, in 2-line Bayer quads
+ * @x_start: first input quad's horizontal position relative to mesh node (0,0)
+ * @y_start: first input quad's vertical position relative to mesh node (0,0)
+ * @subdivision: log2 of the number of interpolation subgrids per cell (0..3)
+ * @_pad: reserved; must be zero
+ * @gains: row-major R, GR, GB, B gains, Q10 in [1024, 8191] (1024 is unity)
+ *
+ * The last node is at ((WIDTH-1)*cell_width, (HEIGHT-1)*cell_height).
+ * The mesh must cover the active Bayer sink image. Width and height must
+ * be divisible by 2^subdivision; hardware interpolation subgrids have
+ * minimum dimensions of 9 quads. Calibration and crop/mode resampling
+ * are userspace operations; these fields describe the resulting mesh.
+ */
+struct camss_params_lsc {
+	struct v4l2_isp_params_block_header header;
+	__u16 cell_width;
+	__u16 cell_height;
+	__u16 x_start;
+	__u16 y_start;
+	__u8 subdivision;
+	__u8 _pad[7];
+	__u16 gains[CAMSS_LSC_CHANNELS][CAMSS_LSC_MESH_POINTS];
+} __attribute__((aligned(8)));
+
+#define CAMSS_PARAMS_IFE_LSC_MAX_PAYLOAD \
+	(CAMSS_PARAMS_IFE_MAX_PAYLOAD + sizeof(struct camss_params_lsc))
 
 /**
  * enum camss_stats_block_type - CAMSS ISP statistics block identifiers
