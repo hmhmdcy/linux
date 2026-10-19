@@ -78,6 +78,7 @@ struct s5k3m5_mode {
 	u32 hts;			/* Horizontal timing size */
 	u32 vts;			/* Default vertical timing size */
 	u32 exposure;			/* Default exposure value */
+	struct v4l2_rect analogue_crop;	/* Relative to the first active pixel */
 
 	const struct s5k3m5_reg_list reg_list;	/* Sensor register setting */
 };
@@ -715,6 +716,7 @@ static const struct s5k3m5_mode s5k3m5_supported_modes[] = {
 		.hts = 4848,
 		.vts = 3314,
 		.exposure = 256,
+		.analogue_crop = { 0, 0, 4208, 3120 },
 		.reg_list = {
 			.regs = s5k3m5_4208x3120_30fps_mode,
 			.num_regs = ARRAY_SIZE(s5k3m5_4208x3120_30fps_mode),
@@ -726,6 +728,7 @@ static const struct s5k3m5_mode s5k3m5_supported_modes[] = {
 		.hts = 4928,
 		.vts = 1624,
 		.exposure = 256,
+		.analogue_crop = { 0, 376, 4208, 2368 },
 		.reg_list = {
 			.regs = s5k3m5_2104x1184_60fps_mode,
 			.num_regs = ARRAY_SIZE(s5k3m5_2104x1184_60fps_mode),
@@ -737,6 +740,7 @@ static const struct s5k3m5_mode s5k3m5_supported_modes[] = {
 
 static const struct s5k3m5_mode s5k3m5_clock19_modes[] = {
 	{ .width = 2104, .height = 1560, .hts = 9648, .vts = 1663, .exposure = 256,
+	  .analogue_crop = { 0, 0, 4208, 3120 },
 	  .reg_list = { s5k3m5_clock19_mode3_regs, ARRAY_SIZE(s5k3m5_clock19_mode3_regs) } },
 };
 static const s64 s5k3m5_clock19_link_freqs[] = { 723200000 };
@@ -1153,27 +1157,35 @@ static int s5k3m5_enum_frame_size(struct v4l2_subdev *sd,
 }
 
 static int s5k3m5_get_selection(struct v4l2_subdev *sd,
-				struct v4l2_subdev_state *sd_state,
-				struct v4l2_subdev_selection *sel)
+			      struct v4l2_subdev_state *sd_state,
+			      struct v4l2_subdev_selection *sel)
 {
 	struct s5k3m5 *s5k3m5 = to_s5k3m5(sd);
+	const struct s5k3m5_mode *mode;
+	struct v4l2_mbus_framefmt *format;
 
-	if (sel->which != V4L2_SUBDEV_FORMAT_ACTIVE)
+	if (sel->pad || (sel->which != V4L2_SUBDEV_FORMAT_ACTIVE &&
+			sel->which != V4L2_SUBDEV_FORMAT_TRY))
 		return -EINVAL;
 
+	/* Coordinates start at the first active pixel, after the fixed margins. */
 	switch (sel->target) {
-	case V4L2_SEL_TGT_CROP:
+	case V4L2_SEL_TGT_NATIVE_SIZE:
 	case V4L2_SEL_TGT_CROP_BOUNDS:
-		sel->r.left = 0;
-		sel->r.top = 0;
-		sel->r.width = s5k3m5->mode->width;
-		sel->r.height = s5k3m5->mode->height;
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+		sel->r = (struct v4l2_rect) { 0, 0, 4208, 3120 };
+		return 0;
+	case V4L2_SEL_TGT_CROP:
+		format = v4l2_subdev_state_get_format(sd_state, sel->pad);
+		mode = v4l2_find_nearest_size(s5k3m5->profile->modes,
+					    s5k3m5->profile->num_modes,
+					    width, height,
+					    format->width, format->height);
+		sel->r = mode->analogue_crop;
 		return 0;
 	default:
 		return -EINVAL;
 	}
-
-	return 0;
 }
 
 static int s5k3m5_init_state(struct v4l2_subdev *sd,
