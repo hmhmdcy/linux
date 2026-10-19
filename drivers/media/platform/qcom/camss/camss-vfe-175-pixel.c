@@ -15,6 +15,16 @@
 #include "camss-vfe-175-demux.h"
 #include "camss-vfe-175-mnds.h"
 
+#define VFE_175_LENS_ENABLE		0x040
+#define VFE_175_BLC_ENABLE		BIT(11)
+#define VFE_175_BLC_CONFIG		0x6b0
+#define VFE_175_BLC_THRESHOLD_0	0x6b4
+#define VFE_175_BLC_THRESHOLD_1	0x6b8
+#define VFE_175_BLC_OFFSET		GENMASK(13, 0)
+#define VFE_175_BLC_SCALE		GENMASK(31, 15)
+#define VFE_175_BLC_THRESHOLDS	(GENMASK(13, 0) | GENMASK(29, 16))
+#define VFE_175_BLC_UNITY		2048
+
 #define VFE_175_WB_GAIN_0		0x6fc
 #define VFE_175_WB_GAIN_1		0x700
 #define VFE_175_WB_OFFSET_0	0x704
@@ -32,6 +42,44 @@ static u32 vfe_175_wb_q7(u16 gain)
 	return min_t(u32, ((u32)gain + 4) >> 3, 4095);
 }
 
+static u32 vfe_175_blc_level(u16 level)
+{
+	/* Common offsets are full-scale U16; the IFE processes U14 pixels. */
+	return ((u32)level * 16383 + 32767) / 65535;
+}
+
+static void vfe_175_blc_enable(struct vfe_device *vfe, bool enable)
+{
+	u32 value = readl_relaxed(vfe->base + VFE_175_LENS_ENABLE);
+
+	value &= ~VFE_175_BLC_ENABLE;
+	if (enable)
+		value |= VFE_175_BLC_ENABLE;
+	writel_relaxed(value, vfe->base + VFE_175_LENS_ENABLE);
+}
+
+static void vfe_175_blc_write(struct vfe_device *vfe)
+{
+	const struct vfe_175_pixel_state *state = &vfe->pixel175;
+	u32 level = state->wb_enabled ? vfe_175_blc_level(state->black_level) : 0;
+	u32 value;
+
+	value = readl_relaxed(vfe->base + VFE_175_BLC_CONFIG);
+	value &= ~(VFE_175_BLC_OFFSET | VFE_175_BLC_SCALE);
+	/* Preserve subtract-then-gain semantics; no implicit range stretch. */
+	value |= FIELD_PREP(VFE_175_BLC_OFFSET, level) |
+		 FIELD_PREP(VFE_175_BLC_SCALE, VFE_175_BLC_UNITY);
+	writel_relaxed(value, vfe->base + VFE_175_BLC_CONFIG);
+	/* Zero thresholds leave the optional per-channel clipping inactive. */
+	value = readl_relaxed(vfe->base + VFE_175_BLC_THRESHOLD_0);
+	writel_relaxed(value & ~VFE_175_BLC_THRESHOLDS,
+		       vfe->base + VFE_175_BLC_THRESHOLD_0);
+	value = readl_relaxed(vfe->base + VFE_175_BLC_THRESHOLD_1);
+	writel_relaxed(value & ~VFE_175_BLC_THRESHOLDS,
+		       vfe->base + VFE_175_BLC_THRESHOLD_1);
+	vfe_175_blc_enable(vfe, level != 0);
+}
+
 static void vfe_175_wb_write(struct vfe_device *vfe)
 {
 	const struct vfe_175_pixel_state *state = &vfe->pixel175;
@@ -44,6 +92,8 @@ static void vfe_175_wb_write(struct vfe_device *vfe)
 		r = vfe_175_wb_q7(state->r_gain);
 	}
 
+	vfe_175_blc_write(vfe);
+
 	value = readl_relaxed(vfe->base + VFE_175_WB_GAIN_0);
 	value &= ~(VFE_175_WB_GREEN | VFE_175_WB_BLUE);
 	value |= FIELD_PREP(VFE_175_WB_GREEN, g) |
@@ -54,7 +104,7 @@ static void vfe_175_wb_write(struct vfe_device *vfe)
 	writel_relaxed(value | FIELD_PREP(VFE_175_WB_RED, r),
 		       vfe->base + VFE_175_WB_GAIN_1);
 
-	/* No offset conversion is advertised: only zero offsets are accepted. */
+	/* The separate BLS block performs the common pre-gain subtraction. */
 	value = readl_relaxed(vfe->base + VFE_175_WB_OFFSET_0);
 	writel_relaxed(value & ~VFE_175_WB_OFFSET_GB,
 		       vfe->base + VFE_175_WB_OFFSET_0);
@@ -79,7 +129,7 @@ static int vfe_175_wb_validate(struct device *dev,
 
 	wb = container_of(block, struct camss_params_wb_gain, header);
 	if (wb->g_gain > 32767 || wb->b_gain > 32767 || wb->r_gain > 32767 ||
-	    wb->g_sub || wb->b_sub || wb->r_sub ||
+	    wb->g_sub != wb->b_sub || wb->g_sub != wb->r_sub ||
 	    wb->g_add || wb->b_add || wb->r_add ||
 	    wb->_pad[0] || wb->_pad[1] || wb->_pad[2])
 		return -EINVAL;
@@ -185,6 +235,7 @@ error:
 
 void vfe_175_pixel_stop(struct vfe_device *vfe)
 {
+	vfe_175_blc_enable(vfe, false);
 	vfe_175_round_stop(vfe);
 	vfe_175_mnds_stop(vfe);
 	vfe_175_gamma_stop(vfe);
@@ -218,6 +269,7 @@ void vfe_175_params_apply(struct vfe_device *vfe, struct vfe_line *line,
 			vfe->pixel175.g_gain = wb->g_gain;
 			vfe->pixel175.b_gain = wb->b_gain;
 			vfe->pixel175.r_gain = wb->r_gain;
+			vfe->pixel175.black_level = wb->g_sub;
 			if (block->flags & V4L2_ISP_PARAMS_FL_BLOCK_ENABLE)
 				vfe->pixel175.wb_enabled = true;
 		}

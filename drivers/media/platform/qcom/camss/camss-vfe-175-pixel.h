@@ -16,6 +16,7 @@ struct vfe_175_pixel_state {
 	u16 g_gain;
 	u16 b_gain;
 	u16 r_gain;
+	u16 black_level;
 	bool wb_enabled;
 	struct vfe_175_stats_state stats;
 };
