@@ -743,7 +743,7 @@ static void vfe_output_update_175(struct vfe_device *vfe,
 /* SM8150 full IFE: shared RDI transport, matched CAMIF and FULL DMA. */
 const struct vfe_hw_ops vfe_ops_175 = {
 	.vfe_stats_fill = vfe_175_stats_fill,
-	.params_max_payload = CAMSS_PARAMS_IFE_LSC_MAX_PAYLOAD,
+	.params_max_payload = CAMSS_PARAMS_IFE_COLOR_MAX_PAYLOAD,
 	.params_validate = vfe_175_params_validate_line,
 	.params_info = vfe_175_params_info,
 	.params_num_types = ARRAY_SIZE(vfe_175_params_info),

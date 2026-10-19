@@ -152,7 +152,7 @@ struct camss_params_chroma_enhan {
  *           a[0]=Out_G, a[1]=Out_B, a[2]=Out_R)
  * @b:       B-input coefficients (12s)
  * @c:       R-input coefficients (12s)
- * @k:       per-output-channel offsets (typically 9s effective)
+ * @k:       per-output-channel offsets (VFE175 uses 11 signed bits)
  * @qfactor: Q-format selector (2u):
  *           0 = 12sQ7  (range ~-16.0 .. +15.992)
  *           1 = 12sQ8  (range  ~-8.0 ..  +7.996)
@@ -277,6 +277,9 @@ struct camss_params_lsc {
 
 #define CAMSS_PARAMS_IFE_LSC_MAX_PAYLOAD \
 	(CAMSS_PARAMS_IFE_MAX_PAYLOAD + sizeof(struct camss_params_lsc))
+
+#define CAMSS_PARAMS_IFE_COLOR_MAX_PAYLOAD \
+	(CAMSS_PARAMS_IFE_LSC_MAX_PAYLOAD + sizeof(struct camss_params_color_correct))
 
 /**
  * enum camss_stats_block_type - CAMSS ISP statistics block identifiers
