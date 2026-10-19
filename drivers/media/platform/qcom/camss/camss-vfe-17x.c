@@ -661,7 +661,7 @@ static void vfe_subdev_init_175(struct device *dev, struct vfe_device *vfe)
 
 		vfe_add_yuv(&pix->output[0], 3, 4, 0);
 		vfe_add_params(&pix->output[1], 0);
-		vfe_add_stats(&pix->output[2], 16, 1);
+		vfe_175_stats_init_output(&pix->output[2]);
 		/* Keep shared pad indices; undeclared DS outputs reject formats. */
 		vfe_set_pix(pix, 3);
 	}
@@ -740,6 +740,7 @@ static void vfe_output_update_175(struct vfe_device *vfe,
 
 /* SM8150 full IFE: shared RDI transport, matched CAMIF and FULL DMA. */
 const struct vfe_hw_ops vfe_ops_175 = {
+	.vfe_stats_fill = vfe_175_stats_fill,
 	.params_info = vfe_175_params_info,
 	.params_num_types = ARRAY_SIZE(vfe_175_params_info),
 	.vfe_params_apply = vfe_175_params_apply,

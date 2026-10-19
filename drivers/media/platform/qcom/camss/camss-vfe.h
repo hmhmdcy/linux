@@ -154,6 +154,7 @@ struct vfe_output {
 	void *dma_vaddr;
 	dma_addr_t dma_addr;
 	size_t dma_size;
+	size_t stats_payload_size;
 };
 
 struct vfe_line {
@@ -217,6 +218,10 @@ struct vfe_hw_ops {
 	unsigned int params_num_types;
 	void (*vfe_params_apply)(struct vfe_device *vfe, struct vfe_line *line,
 				 const struct v4l2_isp_buffer *params);
+
+	/* Optional backend serializer for statistics sharing one SOF/group. */
+	void (*vfe_stats_fill)(struct vfe_device *vfe, struct vfe_output *output,
+			       struct v4l2_isp_buffer *stats);
 
 	/* Output based API - new and shiny */
 	int (*vfe_output_prepare)(struct vfe_device *vfe, struct vfe_output *output);

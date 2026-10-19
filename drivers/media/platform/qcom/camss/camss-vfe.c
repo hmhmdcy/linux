@@ -639,7 +639,10 @@ static const struct v4l2_isp_stats_block_type_info vfe_stats_block_info[] = {
  */
 int vfe_alloc_stats(struct vfe_device *vfe, struct vfe_output *output)
 {
-	output->dma_size = sizeof_field(struct camss_stats_bhist, bins);
+	if (!output->dma_size)
+		output->dma_size = sizeof_field(struct camss_stats_bhist, bins);
+	if (!output->stats_payload_size)
+		output->stats_payload_size = sizeof(struct camss_stats_bhist);
 	output->dma_vaddr = dmam_alloc_coherent(vfe->camss->dev,
 						output->dma_size,
 						&output->dma_addr, GFP_KERNEL);
@@ -664,6 +667,10 @@ static void vfe_stats_fill(struct vfe_device *vfe, struct vfe_output *output,
 	struct camss_stats_bhist *bhist;
 
 	v4l2_isp_stats_init_buffer(stats, V4L2_ISP_VERSION_V1);
+	if (vfe->res->hw_ops->vfe_stats_fill) {
+		vfe->res->hw_ops->vfe_stats_fill(vfe, output, stats);
+		goto done;
+	}
 
 	block = v4l2_isp_stats_init_block(vfe->camss->dev, stats,
 					  vfe_stats_block_info,
@@ -675,6 +682,7 @@ static void vfe_stats_fill(struct vfe_device *vfe, struct vfe_output *output,
 		memcpy(bhist->bins, output->dma_vaddr, sizeof(bhist->bins));
 	}
 
+done:
 	vb2_set_plane_payload(&buf->vb.vb2_buf, 0,
 			      v4l2_isp_buffer_size(stats->data_size));
 }
@@ -2833,7 +2841,7 @@ static int vfe_register_meta_nodes(struct vfe_device *vfe,
 			video->active_fmt.fmt.meta.dataformat =
 				V4L2_META_FMT_QCOM_ISP_STATS;
 			video->active_fmt.fmt.meta.buffersize =
-				v4l2_isp_buffer_size(CAMSS_STATS_MAX_PAYLOAD);
+				v4l2_isp_buffer_size(output->stats_payload_size);
 			suffix = "stats";
 		} else if (output->pad == MSM_VFE_PAD_SINK_PARAMS &&
 			   vfe->res->hw_ops->vfe_params_apply) {

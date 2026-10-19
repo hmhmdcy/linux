@@ -246,9 +246,11 @@ struct camss_params_aec_bhist {
  * of &struct v4l2_isp_block_header.
  *
  * @CAMSS_STATS_AEC_BHIST: AEC Bayer histogram, &struct camss_stats_bhist
+ * @CAMSS_STATS_AWB_BG: Bayer RGB grid, &struct camss_stats_awb_bg
  */
 enum camss_stats_block_type {
 	CAMSS_STATS_AEC_BHIST = 1,
+	CAMSS_STATS_AWB_BG = 2,
 };
 
 /* Number of bins in a Bayer histogram. */
@@ -269,6 +271,71 @@ struct camss_stats_bhist {
 	__u32 bins[CAMSS_STATS_BHIST_BINS];
 } __attribute__((aligned(8)));
 
-#define CAMSS_STATS_MAX_PAYLOAD		sizeof(struct camss_stats_bhist)
+/**
+ * struct camss_stats_bg_region - Bayer channel sums and sample counts
+ *
+ * Each channel sum includes only samples admitted by the statistics threshold.
+ * Counts are per Bayer channel, not the number of pixels in the region.
+ *
+ * @r_sum: red sum
+ * @b_sum: blue sum
+ * @gr_sum: green-on-red-row sum
+ * @gb_sum: green-on-blue-row sum
+ * @r_count: red sample count
+ * @b_count: blue sample count
+ * @gr_count: green-on-red-row sample count
+ * @gb_count: green-on-blue-row sample count
+ */
+struct camss_stats_bg_region {
+	__u32 r_sum;
+	__u32 b_sum;
+	__u32 gr_sum;
+	__u32 gb_sum;
+	__u16 r_count;
+	__u16 b_count;
+	__u16 gr_count;
+	__u16 gb_count;
+};
+
+/**
+ * struct camss_stats_awb_bg - Bayer RGB grid statistics for one input frame
+ *
+ * The driver selects an even, centred grid in the input Bayer frame.
+ * Regions are ordered left to right, top to bottom. All dimensions and
+ * offsets refer to input pixels before image scaling. The sum/count ratio
+ * gives the channel mean in the scale described by @input_bits.
+ *
+ * @header: block header; @header.type = CAMSS_STATS_AWB_BG
+ * @left: horizontal grid offset
+ * @top: vertical grid offset
+ * @region_width: width of each region
+ * @region_height: height of each region
+ * @columns: number of regions per row
+ * @rows: number of region rows
+ * @high_threshold: common channel threshold in the input scale
+ * @input_bits: number of significant input bits
+ * @regions: @columns * @rows channel sum/count records
+ */
+struct camss_stats_awb_bg {
+	struct v4l2_isp_block_header header;
+	__u16 left;
+	__u16 top;
+	__u16 region_width;
+	__u16 region_height;
+	__u16 columns;
+	__u16 rows;
+	__u16 high_threshold;
+	__u16 input_bits;
+	struct camss_stats_bg_region regions[];
+} __attribute__((aligned(8)));
+
+/* Maximum grid exported by the current VFE175 statistics configuration. */
+#define CAMSS_STATS_BG_COLUMNS		32
+#define CAMSS_STATS_BG_ROWS		24
+#define CAMSS_STATS_BG_MAX_REGIONS	(CAMSS_STATS_BG_COLUMNS * CAMSS_STATS_BG_ROWS)
+#define CAMSS_STATS_BG_MAX_PAYLOAD	(sizeof(struct camss_stats_awb_bg) + \
+	CAMSS_STATS_BG_MAX_REGIONS * sizeof(struct camss_stats_bg_region))
+#define CAMSS_STATS_MAX_PAYLOAD		(sizeof(struct camss_stats_bhist) + \
+	CAMSS_STATS_BG_MAX_PAYLOAD)
 
 #endif /* _UAPI_LINUX_QCOM_CAMSS_CONFIG_H */

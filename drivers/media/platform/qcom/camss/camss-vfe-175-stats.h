@@ -11,12 +11,21 @@ struct vfe_device;
 struct vfe_line;
 struct vfe_output;
 struct v4l2_isp_block_header;
+struct v4l2_isp_buffer;
+
+struct vfe_175_bg_state {
+	u16 left, top, width, height, columns, rows;
+};
 
 struct vfe_175_stats_state {
+	struct vfe_175_bg_state bg;
 	u16 left, top, width, height;
 	bool enabled;
 };
 
+void vfe_175_stats_init_output(struct vfe_output *output);
+void vfe_175_stats_fill(struct vfe_device *vfe, struct vfe_output *output,
+			struct v4l2_isp_buffer *stats);
 int vfe_175_bhist_validate(struct device *dev,
 			   const struct v4l2_isp_block_header *block);
 int vfe_175_stats_validate_output(const struct vfe_output *output);
