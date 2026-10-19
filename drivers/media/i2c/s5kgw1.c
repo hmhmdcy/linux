@@ -22,11 +22,20 @@
 #define S5KGW1_FRAME_MAX		0xffff
 #define S5KGW1_EXPOSURE_MIN	6
 #define S5KGW1_EXPOSURE_MARGIN	6
+#define S5KGW1_REG_TEST_PATTERN	CCI_REG16(0x0600)
 
 /* OP PLL: 19.2 MHz / 3 * 312 / 2; LINK_FREQ is half the symbol rate.
  * VT PLL candidate: 19.2 MHz / 3 * 150 * 2. Physical timing is unverified.
  */
 static const s64 s5kgw1_link_freqs[] = { 499200000 };
+
+static const char * const s5kgw1_test_pattern_menu[] = {
+	"Disabled",
+	"Color Bars",
+	"Shade Color Bars",
+};
+
+static const u8 s5kgw1_test_pattern_values[] = { 0, 2, 3 };
 #define S5KGW1_PIXEL_RATE		1920000000LL
 
 struct s5kgw1_reg {
@@ -276,6 +285,10 @@ static int s5kgw1_set_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_ANALOGUE_GAIN:
 		cci_write(sensor->regmap, CCI_REG16(0x0204), ctrl->val, &ret);
 		break;
+	case V4L2_CID_TEST_PATTERN:
+		cci_write(sensor->regmap, S5KGW1_REG_TEST_PATTERN,
+			  s5kgw1_test_pattern_values[ctrl->val], &ret);
+		break;
 	case V4L2_CID_EXPOSURE:
 		cci_write(sensor->regmap, CCI_REG16(0x0202), ctrl->val, &ret);
 		break;
@@ -314,7 +327,7 @@ static int s5kgw1_init_controls(struct s5kgw1 *sensor)
 	u32 vb = mode->frame_length - mode->height;
 	int ret;
 
-	v4l2_ctrl_handler_init(h, 9);
+	v4l2_ctrl_handler_init(h, 10);
 	ctrl = v4l2_ctrl_new_int_menu(h, NULL, V4L2_CID_LINK_FREQ, 0, 0,
 				      s5kgw1_link_freqs);
 	if (ctrl)
@@ -334,6 +347,10 @@ static int s5kgw1_init_controls(struct s5kgw1 *sensor)
 	/* Native code = floor(gain * 32), 1..32x for the normal modes. */
 	v4l2_ctrl_new_std(h, &s5kgw1_ctrl_ops, V4L2_CID_ANALOGUE_GAIN,
 			  32, 1024, 1, 32);
+	v4l2_ctrl_new_std_menu_items(h, &s5kgw1_ctrl_ops,
+				     V4L2_CID_TEST_PATTERN,
+				     ARRAY_SIZE(s5kgw1_test_pattern_menu) - 1,
+				     0, 0, s5kgw1_test_pattern_menu);
 	ret = h->error;
 	if (ret)
 		goto failed;
