@@ -348,6 +348,16 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	if (ret < 0)
 		goto error;
 
+	pad = media_pad_remote_pad_first(&vdev->entity.pads[0]);
+	if (pad && is_media_entity_v4l2_subdev(pad->entity)) {
+		subdev = media_entity_to_v4l2_subdev(pad->entity);
+		if (v4l2_subdev_has_op(subdev, pad, enable_streams)) {
+			ret = v4l2_subdev_enable_streams(subdev, pad->index, BIT_ULL(0));
+			if (ret)
+				goto error;
+			return 0;
+		}
+	}
 	entity = &vdev->entity;
 	while (1) {
 		pad = &entity->pads[0];
@@ -384,7 +394,18 @@ static void video_stop_streaming(struct vb2_queue *q)
 	struct camss_video *video = vb2_get_drv_priv(q);
 	struct video_device *vdev = &video->vdev;
 
-	video_stop_subdevices(video, NULL);
+	struct media_pad *pad = media_pad_remote_pad_first(&vdev->entity.pads[0]);
+	struct v4l2_subdev *subdev = pad && is_media_entity_v4l2_subdev(pad->entity)
+				   ? media_entity_to_v4l2_subdev(pad->entity) : NULL;
+
+	if (subdev && v4l2_subdev_has_op(subdev, pad, disable_streams)) {
+		int ret = v4l2_subdev_disable_streams(subdev, pad->index, BIT_ULL(0));
+
+		if (ret)
+			dev_err(video->camss->dev, "Stream stop failed: %d\n", ret);
+	} else {
+		video_stop_subdevices(video, NULL);
+	}
 	video_device_pipeline_stop(vdev);
 	video->ops->flush_buffers(video, VB2_BUF_STATE_ERROR);
 }

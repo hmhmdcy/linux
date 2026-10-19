@@ -488,6 +488,75 @@ static int csid_configure_stream(struct csid_device *csid, u8 enable)
 	return 0;
 }
 
+/*175 OEM status bit0 acknowledges a path halted at a frame boundary. */
+static int csid_stop_rdi(struct csid_device *csid, u32 port)
+{
+	u32 value;
+	u32 status = (csid_is_lite(csid) ? 0x250 : 0x350) + 0x100 * port;
+	int ret;
+
+	if (!(readl(csid->base + CSID_RDI_CFG0(port)) & BIT(RDI_CFG0_ENABLE)))
+		return 0;
+	__csid_ctrl_rdi(csid, 0, port);
+	ret = readl_poll_timeout(csid->base + status, value, value & BIT(0),
+				10, CSID_RESET_TIMEOUT_MS * 1000);
+	if (!ret)
+		__csid_configure_rdi_stream(csid, 0, port, 0);
+	return ret;
+}
+
+static void csid_configure_rx(struct csid_device *csid)
+{
+	__csid_configure_rx(csid, &csid->phy, 0);
+}
+
+static int csid_enable_stream(struct csid_device *csid, u32 port, u8 vc, u8 dt)
+{
+	const struct csid_format_info *format;
+	int ret;
+
+	if (port >= MSM_CSID_MAX_SRC_STREAMS)
+		return -EINVAL;
+	format = csid_get_fmt_entry(csid->res->formats->formats,
+				    csid->res->formats->nformats,
+				    csid->fmt[MSM_CSID_PAD_FIRST_SRC + port].code);
+	if (dt != format->data_type)
+		return -EINVAL;
+	if (csid_gen2_port_is_ipp(csid, port)) {
+		ret = csid_gen2_configure_ipp(csid, port, vc);
+		if (ret)
+			return ret;
+		writel(1, csid->base + CSID_IPP_CTRL);
+	} else {
+		__csid_configure_rdi_stream(csid, 1, port, vc);
+		__csid_ctrl_rdi(csid, 1, port);
+	}
+	/* A shared generator is started only after the first output is armed. */
+	if (csid->testgen.enabled && !csid->enabled_streams[MSM_CSID_PAD_SINK])
+		__csid_configure_testgen(csid, 1, port, vc);
+	return 0;
+}
+
+static int csid_disable_stream(struct csid_device *csid, u32 port)
+{
+	unsigned int i;
+	bool other = false;
+	int ret = 0;
+
+	if (port >= MSM_CSID_MAX_SRC_STREAMS)
+		return -EINVAL;
+	if (csid_gen2_port_is_ipp(csid, port))
+		ret = csid_gen2_stop_ipp(csid);
+	else
+		ret = csid_stop_rdi(csid, port);
+	for (i = MSM_CSID_PAD_FIRST_SRC; i < csid->subdev.entity.num_pads; i++)
+		if (i != MSM_CSID_PAD_FIRST_SRC + port && csid->enabled_streams[i])
+			other = true;
+	if (csid->testgen.enabled && !other)
+		__csid_configure_testgen(csid, 0, port, 0);
+	return ret;
+}
+
 static int csid_configure_testgen_pattern(struct csid_device *csid, s32 val)
 {
 	if (val > 0 && val <= csid->testgen.nmodes)
@@ -586,6 +655,9 @@ static void csid_subdev_init(struct csid_device *csid)
 
 const struct csid_hw_ops csid_ops_gen2 = {
 	.configure_stream = csid_configure_stream,
+	.configure_rx = csid_configure_rx,
+	.enable_stream = csid_enable_stream,
+	.disable_stream = csid_disable_stream,
 	.configure_testgen_pattern = csid_configure_testgen_pattern,
 	.hw_version = csid_hw_version,
 	.isr = csid_isr,

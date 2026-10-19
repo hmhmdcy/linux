@@ -5961,6 +5961,7 @@ static const struct resources_icc icc_res_8150[] = {
 };
 
 static const struct camss_resources sm8150_resources = {
+	.streams_enable = true,
 	.version = CAMSS_8150,
 	.icc_res = icc_res_8150,
 	.icc_path_num = ARRAY_SIZE(icc_res_8150),

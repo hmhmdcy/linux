@@ -106,6 +106,7 @@ enum icc_count {
 };
 
 struct camss_resources {
+	bool streams_enable;
 	enum camss_version version;
 	const char *pd_name;
 	const struct camss_subdev_resources *csiphy_res;
