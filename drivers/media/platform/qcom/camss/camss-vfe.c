@@ -804,7 +804,15 @@ static struct camss_buffer *vfe_output_done(struct vfe_device *vfe,
 	}
 
 	ready_buf->vb.vb2_buf.timestamp = ts;
-	ready_buf->vb.sequence = output->sequence++;
+	if (line->is_pix && vfe->camss->res->version == CAMSS_8150) {
+		if (ready_buf->sof_valid)
+			output->sequence = ready_buf->vb.sequence + 1;
+		else
+			dev_err_ratelimited(vfe->camss->dev,
+					    "Missing SOF tag for completed PIX buffer\n");
+	} else {
+		ready_buf->vb.sequence = output->sequence++;
+	}
 
 	if (output->pad == MSM_VFE_PAD_SRC_STATS)
 		vfe_stats_fill(vfe, output, ready_buf);
@@ -848,6 +856,7 @@ void vfe_buf_done(struct vfe_device *vfe, int wm, struct camss_buf_done_info *bu
 	struct vfe_line *line;
 	unsigned long flags;
 	unsigned int o;
+	bool sof_tracking = false;
 	u64 ts = ktime_get_ns();
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
@@ -858,6 +867,7 @@ void vfe_buf_done(struct vfe_device *vfe, int wm, struct camss_buf_done_info *bu
 		goto out_unlock;
 	}
 	line = &vfe->line[vfe->wm_output_map[wm]];
+	sof_tracking = line->is_pix && vfe->camss->res->version == CAMSS_8150;
 
 	/* Without per-group status (RDI lines, TFE) there is a single output */
 	if (!line->is_pix || !buf_done_info || !buf_done_info->status) {
@@ -875,8 +885,10 @@ void vfe_buf_done(struct vfe_device *vfe, int wm, struct camss_buf_done_info *bu
 
 		/* one parameters buffer per completed image frame */
 		if (ready[0]) {
-			params = vfe_params_apply_next(vfe, line,
-						       line->output[0].sequence);
+			u32 sequence = sof_tracking ? line->output[0].sof_sequence :
+						      line->output[0].sequence;
+
+			params = vfe_params_apply_next(vfe, line, sequence);
 			if (params)
 				vfe->res->hw_ops->reg_update(vfe, line->id);
 		}
@@ -885,10 +897,14 @@ void vfe_buf_done(struct vfe_device *vfe, int wm, struct camss_buf_done_info *bu
 out_unlock:
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
-	for (o = 0; o < MSM_VFE_NUM_OUTPUTS; o++)
-		if (ready[o])
-			vb2_buffer_done(&ready[o]->vb.vb2_buf,
-					VB2_BUF_STATE_DONE);
+	for (o = 0; o < MSM_VFE_NUM_OUTPUTS; o++) {
+		if (!ready[o])
+			continue;
+		/* A completion counter cannot establish an input-frame identity. */
+		vb2_buffer_done(&ready[o]->vb.vb2_buf,
+				sof_tracking && !ready[o]->sof_valid ?
+				VB2_BUF_STATE_ERROR : VB2_BUF_STATE_DONE);
+	}
 
 	if (params)
 		vb2_buffer_done(&params->vb.vb2_buf, VB2_BUF_STATE_DONE);

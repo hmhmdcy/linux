@@ -467,33 +467,39 @@ error_get_output:
 static void vfe_isr_sof(struct vfe_device *vfe, enum vfe_line_id line_id)
 {
 	struct v4l2_event event = { .type = V4L2_EVENT_FRAME_SYNC };
+	struct vfe_line *line = &vfe->line[line_id];
 	struct vfe_output *output;
 	unsigned long flags;
-	unsigned int i;
+	unsigned int i, o;
 
 	if (vfe->camss->res->version != CAMSS_8150)
 		return;
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
-	output = &vfe->line[line_id].output[0];
+	output = &line->output[0];
 	if (output->state != VFE_OUTPUT_ON) {
 		spin_unlock_irqrestore(&vfe->output_lock, flags);
 		return;
 	}
 	event.u.frame_sync.frame_sequence = output->sof_sequence++;
-	/* A previous buffer may await DONE when this SOF is handled. */
-	for (i = 0; i < CAMSS_INIT_BUF_COUNT; i++) {
-		struct camss_buffer *buf = output->buf[i];
+	/* All outputs observe the same input frame, even if DONE is delayed. */
+	for (o = 0; o < line->num_outputs; o++) {
+		output = &line->output[o];
+		if (output->state != VFE_OUTPUT_ON || !output->wm_num)
+			continue;
+		for (i = 0; i < CAMSS_INIT_BUF_COUNT; i++) {
+			struct camss_buffer *buf = output->buf[i];
 
-		if (buf && !buf->sof_valid) {
-			buf->vb.sequence = event.u.frame_sync.frame_sequence;
-			buf->sof_valid = true;
-			break;
+			if (buf && !buf->sof_valid) {
+				buf->vb.sequence = event.u.frame_sync.frame_sequence;
+				buf->sof_valid = true;
+				break;
+			}
 		}
 	}
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
 
-	v4l2_subdev_notify_event(&vfe->line[line_id].subdev, &event);
+	v4l2_subdev_notify_event(&line->subdev, &event);
 }
 
 /*
