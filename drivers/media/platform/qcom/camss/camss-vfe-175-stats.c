@@ -26,6 +26,10 @@
 #define VFE_175_BG_CLIENT                15
 #define VFE_175_BG_BYTES                 (CAMSS_STATS_BG_MAX_REGIONS * 24)
 #define VFE_175_BG_THRESHOLD             16383
+/* Keep both axes divisible by 16 for the common 16x16 metering aggregation.
+ * The allocation/ABI maximum remains unchanged; metadata reports actual rows.
+ */
+#define VFE_175_BG_DEFAULT_ROWS          16
 #define VFE_175_STATS_MASK               (BIT(15) | BIT(16))
 #define VFE_175_STATS_CGC                0x030
 #define VFE_175_DMI_CONFIG               0xc24
@@ -276,7 +280,7 @@ int vfe_175_stats_prepare(struct vfe_line *line)
 	if (valid) {
 		bg = &vfe->pixel175.stats.bg;
 		bg->columns = min_t(u32, CAMSS_STATS_BG_COLUMNS, width / 6);
-		bg->rows = min_t(u32, CAMSS_STATS_BG_ROWS, height / 2);
+		bg->rows = min_t(u32, VFE_175_BG_DEFAULT_ROWS, height / 2);
 		bg->width = min_t(u32, (width / bg->columns) & ~1U, 390);
 		bg->height = min_t(u32, (height / bg->rows) & ~1U, 512);
 		bg->left = ((width - bg->columns * bg->width) / 2) & ~1U;
