@@ -8,6 +8,7 @@
  * Copyright (C) 2015-2018 Linaro Ltd.
  */
 #include <linux/clk.h>
+#include <linux/math64.h>
 #include <linux/interconnect.h>
 #include <linux/media-bus-format.h>
 #include <linux/media.h>
@@ -4891,6 +4892,40 @@ int camss_get_pixel_clock(struct media_entity *entity, u64 *pixel_clock)
 
 	*pixel_clock = v4l2_ctrl_g_ctrl_int64(ctrl);
 
+	return 0;
+}
+
+/*
+ * camss_get_link_pixel_rate - Pixel throughput received over CSI-2
+ *
+ * V4L2_CID_PIXEL_RATE describes the sensor array, including its timing
+ * blanking. The receiver consumes the CSI-2 link, which may have a different
+ * pixel rate. Keep the array rate available to exposure/frame calculations.
+ */
+int camss_get_link_pixel_rate(struct media_entity *entity, unsigned int bpp,
+			      u64 *pixel_rate)
+{
+	struct media_pad *pad = camss_find_sensor_pad(entity);
+	struct csiphy_lanes_cfg *lanes;
+	struct csiphy_device *csiphy;
+	struct v4l2_subdev *sensor;
+	s64 frequency;
+	u32 mul, div;
+
+	if (!pad || !pixel_rate)
+		return -ENODEV;
+	sensor = media_entity_to_v4l2_subdev(pad->entity);
+	csiphy = sensor->host_priv;
+	if (!csiphy || !csiphy->cfg.csi2)
+		return -ENODEV;
+	lanes = &csiphy->cfg.csi2->lane_cfg;
+	frequency = camss_get_link_freq(entity, bpp, lanes->num_data, lanes->is_cphy);
+	if (frequency <= 0)
+		return frequency ? frequency : -EINVAL;
+	/* CSI-2: two edges; C-PHY carries sixteen bits per seven symbols. */
+	mul = 2 * lanes->num_data * (lanes->is_cphy ? 16 : 1);
+	div = bpp * (lanes->is_cphy ? 7 : 1);
+	*pixel_rate = mul_u64_u32_div(frequency, mul, div);
 	return 0;
 }
 

@@ -1541,8 +1541,12 @@ static int vfe_set_clock_rates(struct vfe_device *vfe)
 	int ret;
 
 	for (i = VFE_LINE_RDI0; i < vfe->res->line_num; i++) {
-		ret = camss_get_pixel_clock(&vfe->line[i].subdev.entity,
-					    &pixel_clock[i]);
+		struct vfe_line *line = &vfe->line[i];
+		u8 bpp = camss_format_get_bpp(line->formats, line->nformats,
+					     line->fmt[MSM_VFE_PAD_SINK].code);
+
+		ret = camss_get_link_pixel_rate(&line->subdev.entity, bpp,
+					       &pixel_clock[i]);
 		if (ret)
 			pixel_clock[i] = 0;
 	}
@@ -1622,8 +1626,12 @@ static int vfe_check_clock_rates(struct vfe_device *vfe)
 	int ret;
 
 	for (i = VFE_LINE_RDI0; i < vfe->res->line_num; i++) {
-		ret = camss_get_pixel_clock(&vfe->line[i].subdev.entity,
-					    &pixel_clock[i]);
+		struct vfe_line *line = &vfe->line[i];
+		u8 bpp = camss_format_get_bpp(line->formats, line->nformats,
+					     line->fmt[MSM_VFE_PAD_SINK].code);
+
+		ret = camss_get_link_pixel_rate(&line->subdev.entity, bpp,
+					       &pixel_clock[i]);
 		if (ret)
 			pixel_clock[i] = 0;
 	}
