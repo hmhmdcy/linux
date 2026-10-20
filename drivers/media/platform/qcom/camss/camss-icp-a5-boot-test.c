@@ -24,12 +24,17 @@ static DEFINE_MUTEX(test_lock);
 static struct camss_a5 *device_a5;
 static struct camss_a5_session session_rt, session_non_rt;
 static u32 scratch_observed[2];
-static const struct camss_a5_ipe_io test_io = {
-	.input = { .width = 640, .height = 480, .stride = 640, .slice_height = 480 },
-	.output = { .width = 640, .height = 480, .stride = 640, .slice_height = 480 },
-	.output_port = 8,
-};
-static char result[2048] = "{\"terminal\":false}";
+static struct camss_a5_ipe_io test_io;
+static unsigned int test_width = 640, test_height = 480, test_port = 8;
+static unsigned int test_cores = 1, test_frames = 1;
+static bool test_uv_swap;
+module_param(test_width, uint, 0400);
+module_param(test_height, uint, 0400);
+module_param(test_port, uint, 0400);
+module_param(test_cores, uint, 0400);
+module_param(test_frames, uint, 0400);
+module_param(test_uv_swap, bool, 0400);
+static char result[4096] = "{\"terminal\":false}";
 static char sfr[512];
 module_param_string(result, result, sizeof(result), 0444);
 module_param_string(sfr, sfr, sizeof(sfr), 0444);
@@ -52,52 +57,97 @@ static const u8 *snapshot_boot_code;
 module_param_array(snapshot_offsets, uint, &snapshot_offset_count, 0444);
 module_param_array(snapshot_words, uint, &snapshot_word_count, 0444);
 
-#define TEST_IMAGE_BYTES (640U * 480U * 3U / 2U)
+#define TEST_IMAGE_MAX_BYTES (64U * 1024U * 1024U)
+static u32 test_image_bytes;
 static void *test_output;
 static u32 test_output_bytes, test_input_crc, test_output_crc;
 static bool enable_frame;
 module_param(enable_frame, bool, 0400);
 
-static int test_frame(struct camss_a5 *a5)
+/* Temporary synthetic test; each submission changes luma and chroma. */
+struct test_frame_observation {
+	u32 input_crc, output_crc, y_different;
+	u64 uv_abs_error;
+};
+static struct test_frame_observation frame_observations[8];
+static u32 test_frames_done;
+
+static void append_frame_results(void)
 {
+	u32 i, off = strlen(result);
+
+	off += scnprintf(result + off, sizeof(result) - off,
+			 ",\"test_width\":%u,\"test_height\":%u,\"test_port\":%u,"
+			 "\"test_cores\":%u,\"test_uv_swap\":%s,\"test_frames\":%u,\"frame_results\":[",
+			 test_width, test_height, test_port, test_cores,
+			 test_uv_swap ? "true" : "false", test_frames);
+	for (i = 0; i < test_frames_done; i++) {
+		const struct test_frame_observation *f = &frame_observations[i];
+
+		off += scnprintf(result + off, sizeof(result) - off,
+				 "%s{\"sequence\":%u,\"non_rt\":%s,\"input_crc\":%u,"
+				 "\"output_crc\":%u,\"y_different\":%u,\"uv_abs_error\":%llu}",
+				 i ? "," : "", i, i & 1 ? "true" : "false",
+				 f->input_crc, f->output_crc, f->y_different,
+				 (unsigned long long)f->uv_abs_error);
+	}
+	scnprintf(result + off, sizeof(result) - off, "]}");
+}
+
+static int test_frame(struct camss_a5 *a5, struct camss_a5_session *session,
+		      u32 sequence)
+{
+	struct test_frame_observation *observation = &frame_observations[sequence];
 	struct camss_a5_ipe_job job = {};
-	u8 *input;
-	unsigned int x, y;
+	u32 pixels = test_width * test_height;
+	u8 *input, *output;
+	u32 x, y, i;
 	int ret;
 
 	test_output_bytes = test_input_crc = test_output_crc = 0;
 	kvfree(test_output);
 	test_output = NULL;
-	input = kvzalloc(TEST_IMAGE_BYTES, GFP_KERNEL);
+	input = kvzalloc(test_image_bytes, GFP_KERNEL);
 	if (!input)
 		return -ENOMEM;
-	test_output = kvzalloc(TEST_IMAGE_BYTES, GFP_KERNEL);
+	test_output = kvzalloc(test_image_bytes, GFP_KERNEL);
 	if (!test_output) {
 		ret = -ENOMEM;
 		goto out;
 	}
-	for (y = 0; y < 480; y++)
-		for (x = 0; x < 640; x++)
-			input[y * 640 + x] = 16 + ((x / 8 + y / 8 * 3) % 28) * 8;
-	for (y = 0; y < 240; y++) {
-		for (x = 0; x < 640; x += 2) {
-			input[640 * 480 + y * 640 + x] = 96 + (x / 80 % 2) * 64;
-			input[640 * 480 + y * 640 + x + 1] = 64 + (y / 60 % 2) * 96;
+	for (y = 0; y < test_height; y++)
+		for (x = 0; x < test_width; x++)
+			input[y * test_width + x] = 16 + ((x / 8 + y / 8 * 3 + sequence * 5) % 28) * 8;
+	for (y = 0; y < test_height / 2; y++) {
+		for (x = 0; x < test_width; x += 2) {
+			u8 u = 96 + ((x / 80 + sequence) % 2) * 64;
+			u8 v = 64 + ((y / 60 + sequence) % 2) * 96;
+
+			input[pixels + y * test_width + x] = test_uv_swap ? v : u;
+			input[pixels + y * test_width + x + 1] = test_uv_swap ? u : v;
 		}
 	}
-	test_input_crc = crc32_le(0, input, TEST_IMAGE_BYTES);
+	test_input_crc = crc32_le(0, input, test_image_bytes);
 	job.input = input;
-	job.input_bytes = TEST_IMAGE_BYTES;
+	job.input_bytes = test_image_bytes;
 	job.output = test_output;
-	job.output_bytes = TEST_IMAGE_BYTES;
-	job.bl_bytes = 156512;
-	job.request_id = 1;
-	job.max_cores = 1;
+	job.output_bytes = test_image_bytes;
+	job.bl_bytes = 512 * 1024;
+	job.request_id = sequence + 1;
+	job.max_cores = test_cores;
 	job.target_time_ns = 100000000;
-	ret = camss_a5_ipe_run(a5, &session_rt, &job);
+	ret = camss_a5_ipe_run(a5, session, &job);
 	if (!ret) {
-		test_output_bytes = TEST_IMAGE_BYTES;
-		test_output_crc = crc32_le(0, test_output, TEST_IMAGE_BYTES);
+		test_output_bytes = test_image_bytes;
+		test_output_crc = crc32_le(0, test_output, test_image_bytes);
+		observation->input_crc = test_input_crc;
+		observation->output_crc = test_output_crc;
+		output = test_output;
+		for (i = 0; i < pixels; i++)
+			observation->y_different += input[i] != output[i];
+		for (i = pixels; i < test_image_bytes; i++)
+			observation->uv_abs_error += abs((int)input[i] - (int)output[i]);
+		test_frames_done++;
 	}
 out:
 	kvfree(input);
@@ -129,7 +179,7 @@ out:
 }
 static const struct bin_attribute image_attribute = {
 	.attr = { .name = "image", .mode = 0400 },
-	.size = TEST_IMAGE_BYTES,
+	.size = TEST_IMAGE_MAX_BYTES,
 	.read = image_read,
 };
 
@@ -241,7 +291,7 @@ static void update_result(void)
 		  "\"cpu_enabled\":%s,\"irq_enabled\":%s,\"power_held\":%s,\"backing_owned\":%s,"
 		  "\"mapped_bytes\":%u,\"remaining_groups\":%u,\"remaining_domains\":%u,"
 		  "\"interrupts\":%u,\"messages\":%u,\"debug_packets\":%u,\"watchdogs\":%u,\"protocol_errors\":%u,"
-		  "\"last_type\":%u,\"queue_state\":[%u,%u,%u,%u,%u,%u],\"image_sessions\":%u,\"session_creates\":%u,\"session_destroys\":%u,\"session_peak\":%u,\"session_uncertain\":%s,\"io_configs\":%u,\"config_maps\":%u,\"config_unmaps\":%u,\"config_fw_mapped\":%s,\"scratch_bytes\":[%u,%u],\"image_frames\":%u,\"frames_completed\":%u,\"transfer_maps\":%u,\"transfer_unmaps\":%u,\"ipe_dma_pending\":%s,\"request_fw_mapped\":%s,\"engine_dma_capable\":%s,\"ipe_reset_acks\":[%u,%u],\"image_bytes\":%u,\"input_crc\":%u,\"output_crc\":%u}",
+		  "\"last_type\":%u,\"queue_state\":[%u,%u,%u,%u,%u,%u],\"image_sessions\":%u,\"session_creates\":%u,\"session_destroys\":%u,\"session_peak\":%u,\"session_uncertain\":%s,\"io_configs\":%u,\"config_maps\":%u,\"config_unmaps\":%u,\"config_fw_mapped\":%s,\"scratch_bytes\":[%u,%u],\"image_frames\":%u,\"frames_completed\":%u,\"transfer_maps\":%u,\"transfer_unmaps\":%u,\"ipe_dma_pending\":%s,\"request_fw_mapped\":%s,\"engine_dma_capable\":%s,\"ipe_reset_acks\":[%u,%u],\"image_bytes\":%u,\"input_crc\":%u,\"output_crc\":%u",
 		  finished ? "true" : "false", phase, test_error, a5->cleanup_error, a5->pc_error,
 		  a5->cpu_release_attempted ? "true" : "false", a5->init_response, a5->fw_version,
 		  a5->response_before, a5->init_bytes,
@@ -262,6 +312,7 @@ static void update_result(void)
 		  a5->ipe_dma_pending ? "true" : "false", a5->request_fw_mapped ? "true" : "false",
 		  a5->engine_dma_capable ? "true" : "false", a5->resources.ipe_reset_acks[0],
 		  a5->resources.ipe_reset_acks[1], test_output_bytes, test_input_crc, test_output_crc);
+	append_frame_results();
 }
 
 static int cleanup(void)
@@ -456,9 +507,12 @@ static void run_locked(struct device *dev)
 {
 	struct camss_a5 *a5 = device_a5;
 	const struct firmware *firmware;
+	u32 sequence;
 	int ret, stop;
 
 	finished = false;
+	test_frames_done = 0;
+	memset(frame_observations, 0, sizeof(frame_observations));
 	dev_info(dev, "A5 diagnostic run begin after binding\n");
 	phase = "request-firmware";
 	ret = request_firmware_direct(&firmware, "qcom/sm8150/samurai-icp356.elf", dev);
@@ -498,10 +552,13 @@ static void run_locked(struct device *dev)
 		goto done;
 	scratch_observed[1] = session_non_rt.scratch_bytes;
 	if (enable_frame) {
-		phase = "process-ipe-rt";
-		ret = test_frame(a5);
-		if (ret)
-			goto done;
+		for (sequence = 0; sequence < test_frames; sequence++) {
+			phase = sequence & 1 ? "process-ipe-non-rt" : "process-ipe-rt";
+			ret = test_frame(a5, sequence & 1 ? &session_non_rt : &session_rt,
+					 sequence);
+			if (ret)
+				goto done;
+		}
 	}
 	phase = "destroy-ipe-non-rt";
 	ret = camss_a5_ipe_destroy(a5, &session_non_rt);
@@ -609,8 +666,21 @@ static struct notifier_block test_bus_notifier = { .notifier_call = test_bus_eve
 
 static int __init boot_test_init(void)
 {
+	u32 stripe_bytes;
+	u64 image_bytes;
 	int ret;
 
+	test_io.input = (struct camss_a5_nv12_layout) {
+		test_width, test_height, test_width, test_height, test_uv_swap };
+	test_io.output = test_io.input;
+	test_io.output_port = test_port;
+	ret = camss_a5_ipe_bypass_size(&test_io, test_cores, &stripe_bytes);
+	if (ret || !test_frames || test_frames > ARRAY_SIZE(frame_observations))
+		return -EINVAL;
+	image_bytes = (u64)test_width * test_height * 3 / 2;
+	if (image_bytes > TEST_IMAGE_MAX_BYTES)
+		return -E2BIG;
+	test_image_bytes = image_bytes;
 	ret = bus_register_notifier(&platform_bus_type, &test_bus_notifier);
 	if (ret)
 		return ret;
