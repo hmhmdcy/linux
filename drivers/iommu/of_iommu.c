@@ -235,7 +235,7 @@ void of_iommu_get_resv_regions(struct device *dev, struct list_head *list)
 		end = maps + size / sizeof(__be32);
 
 		while (maps < end) {
-			struct device_node *np;
+			struct device_node *np __free(device_node) = NULL;
 			u32 phandle;
 
 			phandle = be32_to_cpup(maps++);
