@@ -70,6 +70,7 @@ struct camss_a5 {
 	struct camss_a5_session *config_owner;
 	bool config_fw_mapped;
 	u32 session_scratch_bytes, io_configs, config_maps, config_unmaps;
+	u32 session_header_error, session_payload_status;
 	bool power_held, irq_enabled, cpu_enabled, initialized;
 	bool init_done, ping_done, pc_done, reset_asserted;
 	bool cpu_release_attempted;

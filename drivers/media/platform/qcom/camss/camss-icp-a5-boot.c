@@ -74,7 +74,10 @@
 #define IPE_ASYNC_INDIRECT 0x101000eU
 #define IPE_ASYNC_INDIRECT_ACK 0x102000eU
 #define IPE_IO_CONFIG_BYTES 1216U
-#define CONFIG_IOVA (SHARED_IOVA + 0x20000U)
+/* The 100-KiB debug queue is mapped by firmware as a full 1-MiB
+ * region starting at SHARED_IOVA + DBG_OFFSET. Keep commands beyond it.
+ */
+#define CONFIG_IOVA (SHARED_IOVA + 0x200000U)
 #define CONFIG_BYTES 4096U
 
 static enum hrtimer_restart boot_timeout(struct hrtimer *timer)
@@ -182,9 +185,9 @@ static void process_message(struct camss_a5 *a5, size_t bytes)
 			return;
 		if (get_unaligned_le32(a5->message + 8) != a5->session_opcode)
 			goto malformed;
-		error = get_unaligned_le32(a5->message + 28);
-		if (!error)
-			error = get_unaligned_le32(a5->message + 32);
+		a5->session_header_error = get_unaligned_le32(a5->message + 28);
+		a5->session_payload_status = get_unaligned_le32(a5->message + 32);
+		error = a5->session_header_error ?: a5->session_payload_status;
 		if (!error && a5->session_opcode == IPE_CONFIG_IO)
 			a5->session_scratch_bytes = get_unaligned_le32(a5->message + 36);
 		a5->session_reply = true;
@@ -285,6 +288,7 @@ static int session_token(struct camss_a5 *a5)
 	a5->session_reply = false;
 	a5->session_reply_handle = 0;
 	a5->session_scratch_bytes = 0;
+	a5->session_header_error = a5->session_payload_status = 0;
 	return 0;
 }
 
@@ -378,6 +382,10 @@ static int config_region_locked(struct camss_a5 *a5,
 		session_command_failed(a5, ret);
 		if (map && a5->command_queued)
 			a5->session_uncertain = true;
+		dev_info(a5->dev, "A5 IPE region opcode=%u failed ret=%d hfi=%u status=%u queued=%u reply=%u uncertain=%u\n",
+			 a5->session_opcode, ret, a5->session_header_error,
+			 a5->session_payload_status, a5->command_queued,
+			 a5->session_reply, a5->session_uncertain);
 		return ret;
 	}
 	if (map) {
@@ -439,6 +447,8 @@ int camss_a5_ipe_configure_nv12(struct camss_a5 *a5,
 	ret = send_packet(a5, packet, sizeof(packet), IPE_ASYNC_INDIRECT_ACK);
 	if (ret) {
 		session_command_failed(a5, ret);
+		dev_info(a5->dev, "A5 IPE CONFIG_IO failed ret=%d hfi=%u status=%u\n",
+			 ret, a5->session_header_error, a5->session_payload_status);
 	} else {
 		session->scratch_bytes = a5->session_scratch_bytes;
 		a5->io_configs++;
