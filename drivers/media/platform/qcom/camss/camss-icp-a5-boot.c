@@ -186,7 +186,13 @@ static void process_message(struct camss_a5 *a5, size_t bytes)
 		if (get_unaligned_le32(a5->message + 8) != a5->session_opcode)
 			goto malformed;
 		a5->session_header_error = get_unaligned_le32(a5->message + 28);
-		a5->session_payload_status = get_unaligned_le32(a5->message + 32);
+		/* MAP/UNMAP callbacks only initialize the ACK header. Their
+		 * 12-byte tail retains allocator contents, not a status word.
+		 */
+		a5->session_payload_status =
+			(a5->session_opcode == IPE_CONFIG_IO ||
+			 a5->session_opcode == IPE_DESTROY) ?
+			get_unaligned_le32(a5->message + 32) : 0;
 		error = a5->session_header_error ?: a5->session_payload_status;
 		if (!error && a5->session_opcode == IPE_CONFIG_IO)
 			a5->session_scratch_bytes = get_unaligned_le32(a5->message + 36);
