@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* SM8150 A5/IPE V4L2 queue adapter. Geometry/IQ/DMA stay in the SoC core.
- * Initial unity-scale NV12/NV21 processing uses the core's owned DMA copies.
+ * Unity-scale NV12/NV21 uses core-owned DMA-BUF imports; no image CPU copy.
  */
 #include <linux/dma-buf.h>
 #include <linux/firmware.h>
-#include <linux/iosys-map.h>
+#include <linux/fcntl.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -14,7 +14,7 @@
 #include <media/v4l2-fh.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mem2mem.h>
-#include <media/videobuf2-vmalloc.h>
+#include <media/videobuf2-dma-sg.h>
 
 #include "camss-icp-a5-ipe.h"
 #include "camss-icp-a5-m2m.h"
@@ -48,7 +48,7 @@ struct camss_a5_m2m {
 	struct list_head contexts;
 	u32 users;
 	bool running, fatal, power_pin, removing, mc_registered, media_registered;
-	u64 jobs, completed, cancelled, failed, starts, stops;
+	u64 jobs, completed, direct_completed, cancelled, failed, starts, stops;
 };
 
 static struct ipe_context *file_context(struct file *file)
@@ -130,46 +130,22 @@ fail:
 	return ret;
 }
 
-struct ipe_cpu_buffer {
-	struct dma_buf *dma;
-	struct iosys_map map;
-	void *address;
-	bool access, mapped;
-};
-
-static int cpu_begin(struct vb2_buffer *vb, struct ipe_cpu_buffer *buffer)
+/* An MMAP export pins vb2 backing independently of queue/file lifetime;
+ * imported buffers already carry a DMA-BUF. The core takes another reference
+ * before starting DMA, including on uncertain completion/reset failure.
+ */
+static struct dma_buf *image_buffer(struct vb2_buffer *vb)
 {
-	int ret;
+ struct dma_buf *buffer = vb->planes[0].dbuf;
 
-	buffer->dma = vb->planes[0].dbuf;
-	if (!buffer->dma) {
-		buffer->address = vb2_plane_vaddr(vb, 0);
-		if (!buffer->address)
-			return -EFAULT;
-	} else {
-		ret = dma_buf_begin_cpu_access(buffer->dma, DMA_BIDIRECTIONAL);
-		if (ret)
-			return ret;
-		buffer->access = true;
-		ret = dma_buf_vmap_unlocked(buffer->dma, &buffer->map);
-		if (ret)
-			return ret;
-		buffer->mapped = true;
-		if (buffer->map.is_iomem || iosys_map_is_null(&buffer->map))
-			return -EOPNOTSUPP;
-		buffer->address = buffer->map.vaddr;
-	}
-	buffer->address += vb->planes[0].data_offset;
-	return 0;
-}
-
-static int cpu_end(struct ipe_cpu_buffer *buffer)
-{
-	if (buffer->mapped)
-		dma_buf_vunmap_unlocked(buffer->dma, &buffer->map);
-	if (buffer->access)
-		return dma_buf_end_cpu_access(buffer->dma, DMA_BIDIRECTIONAL);
-	return 0;
+ if (buffer) {
+  get_dma_buf(buffer);
+  return buffer;
+ }
+ if (vb->memory != V4L2_MEMORY_MMAP || !vb->vb2_queue->mem_ops->get_dmabuf)
+  return ERR_PTR(-EINVAL);
+ buffer = vb->vb2_queue->mem_ops->get_dmabuf(vb, vb->planes[0].mem_priv, O_RDWR);
+ return buffer ?: ERR_PTR(-ENOMEM);
 }
 
 static int ensure_session(struct ipe_context *ctx)
@@ -201,14 +177,14 @@ static void device_work(struct work_struct *work)
 	struct camss_a5_m2m *dev = ctx->dev;
 	struct vb2_v4l2_buffer *src = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
 	struct vb2_v4l2_buffer *dst = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
-	struct ipe_cpu_buffer input = {}, output = {};
+	struct dma_buf *input = NULL, *output = NULL;
 	struct camss_a5_ipe_job job = {
 		.input_bytes = ctx->format.plane_fmt[0].sizeimage,
 		.output_bytes = ctx->format.plane_fmt[0].sizeimage,
 		.bl_bytes = 512 * 1024, .max_cores = 2,
 		.target_time_ns = 100000000,
 	};
-	int ret = -ECANCELED, end_ret;
+	int ret = -ECANCELED;
 
 	if (!src || !dst) {
 		if (src)
@@ -232,14 +208,22 @@ static void device_work(struct work_struct *work)
 		ret = -EAGAIN;
 		goto finish;
 	}
-	ret = cpu_begin(&src->vb2_buf, &input);
-	if (ret)
+	input = image_buffer(&src->vb2_buf);
+	if (IS_ERR(input)) {
+		ret = PTR_ERR(input);
+		input = NULL;
 		goto finish;
-	ret = cpu_begin(&dst->vb2_buf, &output);
-	if (ret)
+	}
+	output = image_buffer(&dst->vb2_buf);
+	if (IS_ERR(output)) {
+		ret = PTR_ERR(output);
+		output = NULL;
 		goto finish;
-	job.input = input.address;
-	job.output = output.address;
+	}
+	job.input_dma = input;
+	job.output_dma = output;
+	job.input_offset = src->vb2_buf.planes[0].data_offset;
+	job.output_offset = dst->vb2_buf.planes[0].data_offset;
 	ret = ensure_session(ctx);
 	if (ret)
 		goto hw_fail;
@@ -249,25 +233,26 @@ static void device_work(struct work_struct *work)
 		goto finish;
 hw_fail:
 	dev->fatal = true;
-	/* The original input/output are CPU copied by the core, so even a
-	 * retained engine transaction owns separate backing, not vb2 memory.
+	/* On uncertain completion the core retains its own attachment and
+	 * DMA-BUF reference. Queue teardown cannot free that backing. A failed
+	 * quiesce keeps the platform owner and PM pin for explicit cleanup.
 	 */
 	stop_backend(dev);
 finish:
-	end_ret = cpu_end(&output);
-	if (!ret)
-		ret = end_ret;
-	end_ret = cpu_end(&input);
-	if (!ret)
-		ret = end_ret;
+	if (output)
+		dma_buf_put(output);
+	if (input)
+		dma_buf_put(input);
 	if (!ret && READ_ONCE(ctx->aborting))
 		ret = -ECANCELED;
 	if (ret == -ECANCELED)
 		dev->cancelled++;
 	else if (ret)
 		dev->failed++;
-	else
+	else {
 		dev->completed++;
+		dev->direct_completed++;
+	}
 	mutex_unlock(&dev->hw_lock);
 	if (ret && ret != -ECANCELED) {
 		vb2_queue_error(v4l2_m2m_get_src_vq(ctx->fh.m2m_ctx));
@@ -399,7 +384,7 @@ static int queue_init(void *private, struct vb2_queue *src,
 		q->drv_priv = ctx;
 		q->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
 		q->ops = &queue_ops;
-		q->mem_ops = &vb2_vmalloc_memops;
+		q->mem_ops = &vb2_dma_sg_memops;
 		q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 		q->lock = &ctx->dev->video_lock;
 		q->dev = ctx->dev->a5->dev;
@@ -743,10 +728,11 @@ ssize_t camss_a5_m2m_status(struct camss_a5_m2m *dev, char *buffer, size_t size)
 	ret = scnprintf(buffer, size,
 		"{\"registered\":true,\"users\":%u,\"running\":%s,\"fatal\":%s,"
 		"\"pinned\":%s,\"orphans\":%u,\"jobs\":%llu,\"completed\":%llu,"
-		"\"cancelled\":%llu,\"failed\":%llu,\"starts\":%llu,\"stops\":%llu}\n",
+		"\"direct_completed\":%llu,\"cancelled\":%llu,\"failed\":%llu,\"starts\":%llu,\"stops\":%llu}\n",
 		dev->users, dev->running ? "true" : "false", dev->fatal ? "true" : "false",
 		dev->power_pin ? "true" : "false", orphans,
 		(unsigned long long)dev->jobs, (unsigned long long)dev->completed,
+		(unsigned long long)dev->direct_completed,
 		(unsigned long long)dev->cancelled, (unsigned long long)dev->failed,
 		(unsigned long long)dev->starts,
 		(unsigned long long)dev->stops);

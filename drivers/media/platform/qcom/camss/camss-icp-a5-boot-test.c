@@ -299,7 +299,7 @@ static void update_result(void)
 		  "\"cpu_enabled\":%s,\"irq_enabled\":%s,\"power_held\":%s,\"backing_owned\":%s,"
 		  "\"mapped_bytes\":%u,\"remaining_groups\":%u,\"remaining_domains\":%u,"
 		  "\"interrupts\":%u,\"messages\":%u,\"debug_packets\":%u,\"watchdogs\":%u,\"protocol_errors\":%u,"
-		  "\"last_type\":%u,\"queue_state\":[%u,%u,%u,%u,%u,%u],\"image_sessions\":%u,\"session_creates\":%u,\"session_destroys\":%u,\"session_peak\":%u,\"session_uncertain\":%s,\"io_configs\":%u,\"config_maps\":%u,\"config_unmaps\":%u,\"config_fw_mapped\":%s,\"scratch_bytes\":[%u,%u],\"image_frames\":%u,\"frames_completed\":%u,\"transfer_maps\":%u,\"transfer_unmaps\":%u,\"ipe_dma_pending\":%s,\"request_fw_mapped\":%s,\"engine_dma_capable\":%s,\"ipe_reset_acks\":[%u,%u],\"image_bytes\":%u,\"input_crc\":%u,\"output_crc\":%u",
+		  "\"last_type\":%u,\"queue_state\":[%u,%u,%u,%u,%u,%u],\"image_sessions\":%u,\"session_creates\":%u,\"session_destroys\":%u,\"session_peak\":%u,\"session_uncertain\":%s,\"io_configs\":%u,\"config_maps\":%u,\"config_unmaps\":%u,\"config_fw_mapped\":%s,\"scratch_bytes\":[%u,%u],\"direct_frames\":%u,\"copy_frames\":%u,\"imported_buffers\":%u,\"imported_bytes\":%llu,\"image_frames\":%u,\"frames_completed\":%u,\"transfer_maps\":%u,\"transfer_unmaps\":%u,\"ipe_dma_pending\":%s,\"request_fw_mapped\":%s,\"engine_dma_capable\":%s,\"ipe_reset_acks\":[%u,%u],\"image_bytes\":%u,\"input_crc\":%u,\"output_crc\":%u",
 		  finished ? "true" : "false", phase, test_error, a5->cleanup_error, a5->pc_error,
 		  a5->cpu_release_attempted ? "true" : "false", a5->init_response, a5->fw_version,
 		  a5->response_before, a5->init_bytes,
@@ -316,6 +316,9 @@ static void update_result(void)
 		  a5->session_count, a5->session_creates, a5->session_destroys, a5->session_peak,
 		  a5->session_uncertain ? "true" : "false", a5->io_configs, a5->config_maps, a5->config_unmaps,
 		  a5->config_fw_mapped ? "true" : "false", scratch_observed[0], scratch_observed[1],
+		  a5->direct_frames, a5->copy_frames,
+		  !!a5->dma_input.buffer + !!a5->dma_output.buffer,
+		  (unsigned long long)a5->dma_input.bytes + a5->dma_output.bytes,
 		  a5->frames_submitted, a5->frames_completed, a5->transfer_maps, a5->transfer_unmaps,
 		  a5->ipe_dma_pending ? "true" : "false", a5->request_fw_mapped ? "true" : "false",
 		  a5->engine_dma_capable ? "true" : "false", a5->resources.ipe_reset_acks[0],

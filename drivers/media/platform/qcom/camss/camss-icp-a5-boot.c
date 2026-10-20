@@ -652,7 +652,8 @@ static void invalidate_sessions(struct camss_a5 *a5)
 bool camss_a5_backing_owned(const struct camss_a5 *a5)
 {
 	return a5->firmware.cpu || a5->shared.cpu || a5->heap.cpu || a5->config.cpu ||
-	       a5->request.cpu || a5->image_input.cpu || a5->image_output.cpu;
+	       a5->request.cpu || a5->image_input.cpu || a5->image_output.cpu ||
+	       a5->dma_input.buffer || a5->dma_output.buffer;
 }
 EXPORT_SYMBOL_GPL(camss_a5_backing_owned);
 
@@ -716,6 +717,16 @@ static void publish_start_failure(struct camss_a5 *a5)
 	dev_coredumpv(a5->dev, dump, sizeof(*dump), GFP_KERNEL);
 }
 
+static int free_imported_images(struct camss_a5 *a5)
+{
+ int ret;
+
+ if (a5->ipe_dma_pending || a5->request_fw_mapped)
+  return -EBUSY;
+ ret = camss_a5_dma_image_release(&a5->dma_output);
+ return ret ?: camss_a5_dma_image_release(&a5->dma_input);
+}
+
 static int free_memory(struct camss_a5 *a5)
 {
 	struct camss_a5_fw_memory *memories[] = {
@@ -727,6 +738,9 @@ static int free_memory(struct camss_a5 *a5)
 
 	if (a5->cpu_enabled || a5->ipe_dma_pending)
 		return -EBUSY;
+	ret = free_imported_images(a5);
+	if (ret)
+		return ret;
 	capture_shared_state(a5);
 	for (i = 0; i < ARRAY_SIZE(memories); i++) {
 		ret = camss_a5_fw_memory_unmap(memories[i]);
@@ -959,6 +973,7 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	a5->session_creates = a5->session_destroys = a5->session_peak = 0;
 	a5->io_configs = a5->config_maps = a5->config_unmaps = 0;
 	a5->frames_submitted = a5->frames_completed = 0;
+	a5->direct_frames = a5->copy_frames = 0;
 	a5->transfer_maps = a5->transfer_unmaps = 0;
 	ret = prepare_memory(a5, firmware);
 	if (ret)
@@ -1226,6 +1241,9 @@ static int free_transfer_memory(struct camss_a5 *a5)
 
 	if (a5->ipe_dma_pending || a5->request_fw_mapped)
 		return -EBUSY;
+	ret = free_imported_images(a5);
+	if (ret)
+		return ret;
 	for (i = 0; i < ARRAY_SIZE(memories); i++) {
 		ret = camss_a5_fw_memory_unmap(memories[i]);
 		if (ret)
@@ -1281,10 +1299,14 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 	u8 packet[40] = {};
 	u64 input_bytes, output_bytes, parcel;
 	u32 stripe_bytes, iq_offset, scratch_offset, bl_offset;
+	bool direct;
 	int ret, cleanup;
 
-	if (!a5 || !session || !job ||
-	    !job->input || !job->output ||
+	if (!a5 || !session || !job)
+		return -EINVAL;
+	direct = job->input_dma || job->output_dma;
+	if ((direct && (!job->input_dma || !job->output_dma || job->input || job->output)) ||
+	    (!direct && (!job->input || !job->output || job->input_offset || job->output_offset)) ||
 	    !job->bl_bytes || job->bl_bytes < 32 ||
 	    !job->max_cores || job->max_cores > 2 || !job->target_time_ns)
 		return -EINVAL;
@@ -1295,7 +1317,8 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 		goto done;
 	}
 	if (a5->session_uncertain || a5->ipe_dma_pending ||
-	    a5->request.cpu || a5->image_input.cpu || a5->image_output.cpu) {
+	    a5->request.cpu || a5->image_input.cpu || a5->image_output.cpu ||
+	    a5->dma_input.buffer || a5->dma_output.buffer) {
 		ret = -EBUSY;
 		goto done;
 	}
@@ -1330,10 +1353,19 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 	ret = transfer_alloc(a5, &a5->request, REQUEST_IOVA, parcel);
 	if (ret)
 		goto release;
-	ret = transfer_alloc(a5, &a5->image_input, IMAGE_INPUT_IOVA, PAGE_ALIGN(input_bytes));
-	if (ret)
-		goto release;
-	ret = transfer_alloc(a5, &a5->image_output, IMAGE_OUTPUT_IOVA, PAGE_ALIGN(output_bytes));
+	if (direct) {
+		ret = camss_a5_dma_image_map(a5->dev, &a5->dma_input, job->input_dma,
+					     job->input_offset, input_bytes, DMA_TO_DEVICE);
+		if (!ret)
+			ret = camss_a5_dma_image_map(a5->dev, &a5->dma_output, job->output_dma,
+						     job->output_offset, output_bytes, DMA_FROM_DEVICE);
+		if (!ret)
+			ret = camss_a5_dma_images_disjoint(&a5->dma_input, &a5->dma_output);
+	} else {
+		ret = transfer_alloc(a5, &a5->image_input, IMAGE_INPUT_IOVA, PAGE_ALIGN(input_bytes));
+		if (!ret)
+			ret = transfer_alloc(a5, &a5->image_output, IMAGE_OUTPUT_IOVA, PAGE_ALIGN(output_bytes));
+	}
 	if (ret)
 		goto release;
 	ret = camss_a5_ipe_encode_bypass_striping(a5->request.cpu + PAGE_SIZE,
@@ -1344,14 +1376,16 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 	ret = camss_a5_ipe_encode_bypass_iq(a5->request.cpu + iq_offset, CAMSS_A5_IPE_IQ_BYTES);
 	if (ret)
 		goto release;
-	memcpy(a5->image_input.cpu, job->input, input_bytes);
-	memset(a5->image_output.cpu, 0xa5, output_bytes);
+	if (!direct) {
+		memcpy(a5->image_input.cpu, job->input, input_bytes);
+		memset(a5->image_output.cpu, 0xa5, output_bytes);
+	}
 	frame.striping = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + PAGE_SIZE, stripe_bytes };
 	frame.iq = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + iq_offset, CAMSS_A5_IPE_IQ_BYTES };
 	frame.scratch = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + scratch_offset, session->scratch_bytes };
 	frame.bl = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + bl_offset, job->bl_bytes };
-	frame.input = (struct camss_a5_ipe_buffer){ IMAGE_INPUT_IOVA, input_bytes };
-	frame.output = (struct camss_a5_ipe_buffer){ IMAGE_OUTPUT_IOVA, output_bytes };
+	frame.input = (struct camss_a5_ipe_buffer){ direct ? a5->dma_input.iova : IMAGE_INPUT_IOVA, input_bytes };
+	frame.output = (struct camss_a5_ipe_buffer){ direct ? a5->dma_output.iova : IMAGE_OUTPUT_IOVA, output_bytes };
 	frame.striping_cpu = a5->request.cpu + PAGE_SIZE;
 	frame.required_scratch_bytes = session->scratch_bytes;
 	frame.required_bl_bytes = job->bl_bytes;
@@ -1394,7 +1428,12 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 	} else {
 		a5->frames_completed++;
 		dma_rmb();
-		memcpy(job->output, a5->image_output.cpu, output_bytes);
+		if (direct)
+			a5->direct_frames++;
+		else {
+			a5->copy_frames++;
+			memcpy(job->output, a5->image_output.cpu, output_bytes);
+		}
 		dev_info(a5->dev, "A5 IPE frame completed request=%u\n", job->request_id);
 	}
 unmap:

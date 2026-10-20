@@ -8,6 +8,7 @@
 #include <linux/reset.h>
 #include <linux/spinlock.h>
 #include "camss-icp-a5.h"
+#include "camss-icp-a5-dma.h"
 #include "camss-icp-a5-resources.h"
 
 struct camss_a5;
@@ -48,6 +49,7 @@ struct camss_a5 {
 	phys_addr_t firmware_physical;
 	struct camss_a5_fw_memory firmware, shared, heap, config;
 	struct camss_a5_fw_memory request, image_input, image_output;
+	struct camss_a5_dma_image dma_input, dma_output;
 	struct camss_a5_ring rings[CAMSS_A5_QUEUE_COUNT];
 	struct camss_a5_qtable *table;
 	struct completion response;
@@ -73,6 +75,7 @@ struct camss_a5 {
 	bool engine_dma_capable, ipe_dma_pending, request_fw_mapped;
 	struct camss_a5_session *request_owner;
 	u32 frames_submitted, frames_completed, transfer_maps, transfer_unmaps;
+	u32 direct_frames, copy_frames;
 	u32 session_scratch_bytes, io_configs, config_maps, config_unmaps;
 	u32 session_header_error, session_payload_status;
 	bool power_held, irq_enabled, cpu_enabled, initialized;
