@@ -3982,6 +3982,65 @@
 			};
 		};
 
+		/* A5 firmware backend; board memory and a driver are needed to enable it. */
+		camss_icp: icp@ac10000 {
+			compatible = "qcom,sm8150-camss-icp";
+			reg = <0 0x0ac10000 0 0x8000>,
+			      <0 0x0ac6f000 0 0x3000>,
+			      <0 0x0ac87000 0 0x3000>,
+			      <0 0x0ac91000 0 0x3000>;
+			reg-names = "sierra", "bps", "ipe0", "ipe1";
+			interrupts = <GIC_SPI 463 IRQ_TYPE_EDGE_RISING>;
+			qcom,camss = <&camss>;
+			iommus = <&apps_smmu 0x2222 0>;
+			clocks = <&camcc CAM_CC_FAST_AHB_CLK_SRC>,
+				 <&camcc CAM_CC_ICP_AHB_CLK>,
+				 <&camcc CAM_CC_ICP_CLK_SRC>,
+				 <&camcc CAM_CC_ICP_CLK>,
+				 <&camcc CAM_CC_BPS_AHB_CLK>,
+				 <&camcc CAM_CC_BPS_AREG_CLK>,
+				 <&camcc CAM_CC_BPS_AXI_CLK>,
+				 <&camcc CAM_CC_BPS_CLK_SRC>,
+				 <&camcc CAM_CC_BPS_CLK>,
+				 <&camcc CAM_CC_IPE_0_AHB_CLK>,
+				 <&camcc CAM_CC_IPE_0_AREG_CLK>,
+				 <&camcc CAM_CC_IPE_0_AXI_CLK>,
+				 <&camcc CAM_CC_IPE_0_CLK_SRC>,
+				 <&camcc CAM_CC_IPE_0_CLK>,
+				 <&camcc CAM_CC_IPE_1_AHB_CLK>,
+				 <&camcc CAM_CC_IPE_1_AREG_CLK>,
+				 <&camcc CAM_CC_IPE_1_AXI_CLK>,
+				 <&camcc CAM_CC_IPE_0_CLK_SRC>,
+				 <&camcc CAM_CC_IPE_1_CLK>;
+			clock-names = "fast_ahb_src",
+				      "icp_ahb",
+				      "icp_src",
+				      "icp",
+				      "bps_ahb",
+				      "bps_areg",
+				      "bps_axi",
+				      "bps_src",
+				      "bps",
+				      "ipe0_ahb",
+				      "ipe0_areg",
+				      "ipe0_axi",
+				      "ipe_src",
+				      "ipe0",
+				      "ipe1_ahb",
+				      "ipe1_areg",
+				      "ipe1_axi",
+				      "ipe1_src",
+				      "ipe1";
+			power-domains = <&camcc BPS_GDSC>, <&camcc IPE_0_GDSC>,
+					<&camcc IPE_1_GDSC>;
+			power-domain-names = "bps", "ipe0", "ipe1";
+			resets = <&camcc CAM_CC_ICP_BCR>;
+			reset-names = "icp";
+			#address-cells = <2>;
+			#size-cells = <2>;
+			status = "disabled";
+		};
+
 		camss: camss@acb3000 {
 			compatible = "qcom,sm8150-camss";
 

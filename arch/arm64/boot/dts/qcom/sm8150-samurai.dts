@@ -1092,3 +1092,9 @@
 &cci1 {
 	vddio-supply = <&vreg_l1c_1p8>;
 };
+
+/* Original 19781 board reservation. The unvalidated ICP backend stays dormant. */
+&camss_icp {
+	memory-region = <&camera_mem>;
+	memory-region-names = "firmware";
+};
