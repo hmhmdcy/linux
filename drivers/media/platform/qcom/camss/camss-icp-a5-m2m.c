@@ -612,6 +612,7 @@ struct camss_a5_m2m *camss_a5_m2m_register(struct camss_a5 *a5,
 	dev->bound = bound;
 	dev->removing = true;
 	dev->media.dev = a5->dev;
+	strscpy(dev->media.driver_name, "qcom-ipe-a5", sizeof(dev->media.driver_name));
 	strscpy(dev->media.model, "SM8150 IPE", sizeof(dev->media.model));
 	snprintf(dev->media.bus_info, sizeof(dev->media.bus_info), "platform:%s",
 		 dev_name(a5->dev));
