@@ -47,4 +47,16 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 
 int camss_a5_ipe_encode_bypass_iq(void *buffer, u32 bytes);
 
+
+/* Inclusive ranges in descending output order for the disabled-IQ,
+ * full-frame 1:1 NV12/NV21 path. No scaling or geometric warp is implied.
+ */
+struct camss_a5_ipe_partition {
+	u16 fetch_first, fetch_last;
+	u16 output_first, output_last;
+};
+int camss_a5_ipe_bypass_partitions(u32 width, u32 cores,
+				 struct camss_a5_ipe_partition *output,
+				 u32 capacity, u32 *count);
+
 #endif
