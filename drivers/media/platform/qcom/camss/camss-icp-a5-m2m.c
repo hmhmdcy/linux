@@ -47,10 +47,23 @@ struct camss_a5_m2m {
 	struct mutex video_lock, hw_lock;
 	struct list_head contexts;
 	u32 users;
+	struct vb2_mem_ops memory_ops;
 	int first_error;
 	bool running, fatal, power_pin, removing, mc_registered, media_registered;
 	u64 jobs, completed, direct_completed, cancelled, failed, starts, stops;
 };
+
+/* Export the original SG buffer with the platform owner pinned. The owner
+ * depends on this adapter, which depends on DMA-SG; the DMA-BUF core drops
+ * that pin only after allocator release, including delayed fput and VMAs.
+ */
+static struct dma_buf *owned_export_buffer(struct vb2_buffer *vb, void *private,
+					  unsigned long flags)
+{
+	struct ipe_context *ctx = vb2_get_drv_priv(vb->vb2_queue);
+
+	return vb2_dma_sg_get_dmabuf_owner(vb, private, flags, ctx->dev->owner);
+}
 
 static struct ipe_context *file_context(struct file *file)
 {
@@ -389,7 +402,7 @@ static int queue_init(void *private, struct vb2_queue *src,
 		q->drv_priv = ctx;
 		q->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
 		q->ops = &queue_ops;
-		q->mem_ops = &vb2_dma_sg_memops;
+		q->mem_ops = &ctx->dev->memory_ops;
 		q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 		q->lock = &ctx->dev->video_lock;
 		q->dev = ctx->dev->a5->dev;
@@ -617,6 +630,8 @@ struct camss_a5_m2m *camss_a5_m2m_register(struct camss_a5 *a5,
 	mutex_init(&dev->video_lock);
 	mutex_init(&dev->hw_lock);
 	INIT_LIST_HEAD(&dev->contexts);
+	dev->memory_ops = vb2_dma_sg_memops;
+	dev->memory_ops.get_dmabuf = owned_export_buffer;
 	ret = v4l2_device_register(a5->dev, &dev->v4l2);
 	if (ret)
 		goto free;
@@ -733,11 +748,12 @@ ssize_t camss_a5_m2m_status(struct camss_a5_m2m *dev, char *buffer, size_t size)
 	ret = scnprintf(buffer, size,
 		"{\"registered\":true,\"users\":%u,\"running\":%s,\"fatal\":%s,"
 		"\"pinned\":%s,\"orphans\":%u,\"jobs\":%llu,\"completed\":%llu,"
-		"\"first_error\":%d,\"direct_completed\":%llu,\"cancelled\":%llu,\"failed\":%llu,\"starts\":%llu,\"stops\":%llu}\n",
+		"\"owner_refs\":%d,\"first_error\":%d,\"direct_completed\":%llu,\"cancelled\":%llu,\"failed\":%llu,\"starts\":%llu,\"stops\":%llu}\n",
 		dev->users, dev->running ? "true" : "false", dev->fatal ? "true" : "false",
 		dev->power_pin ? "true" : "false", orphans,
 		(unsigned long long)dev->jobs, (unsigned long long)dev->completed,
-		dev->first_error, (unsigned long long)dev->direct_completed,
+		module_refcount(dev->owner), dev->first_error,
+		(unsigned long long)dev->direct_completed,
 		(unsigned long long)dev->cancelled, (unsigned long long)dev->failed,
 		(unsigned long long)dev->starts,
 		(unsigned long long)dev->stops);

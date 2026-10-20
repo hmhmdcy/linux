@@ -519,15 +519,16 @@ static const struct dma_buf_ops vb2_dma_sg_dmabuf_ops = {
 	.release = vb2_dma_sg_dmabuf_ops_release,
 };
 
-static struct dma_buf *vb2_dma_sg_get_dmabuf(struct vb2_buffer *vb,
-					     void *buf_priv,
-					     unsigned long flags)
+struct dma_buf *vb2_dma_sg_get_dmabuf_owner(struct vb2_buffer *vb,
+					 void *buf_priv, unsigned long flags,
+					 struct module *owner)
 {
 	struct vb2_dma_sg_buf *buf = buf_priv;
 	struct dma_buf *dbuf;
 	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
 
 	exp_info.ops = &vb2_dma_sg_dmabuf_ops;
+	exp_info.owner = owner;
 	exp_info.size = buf->size;
 	exp_info.flags = flags;
 	exp_info.priv = buf;
@@ -543,6 +544,19 @@ static struct dma_buf *vb2_dma_sg_get_dmabuf(struct vb2_buffer *vb,
 	refcount_inc(&buf->refcount);
 
 	return dbuf;
+}
+
+/* The caller's owner must keep the allocation device and this allocator
+ * valid through the exported file's release. A modular caller already has
+ * an allocator dependency; use its bound owner, including for deferred fput.
+ */
+EXPORT_SYMBOL_GPL(vb2_dma_sg_get_dmabuf_owner);
+
+static struct dma_buf *vb2_dma_sg_get_dmabuf(struct vb2_buffer *vb,
+					     void *buf_priv,
+					     unsigned long flags)
+{
+	return vb2_dma_sg_get_dmabuf_owner(vb, buf_priv, flags, THIS_MODULE);
 }
 
 /*********************************************/

@@ -21,6 +21,13 @@ static inline struct sg_table *vb2_dma_sg_plane_desc(
 	return (struct sg_table *)vb2_plane_cookie(vb, plane_no);
 }
 
+struct dma_buf;
+struct module;
+
+/* The owner must retain the DMA allocation device and the allocator module. */
+struct dma_buf *vb2_dma_sg_get_dmabuf_owner(struct vb2_buffer *vb, void *buf_priv,
+					 unsigned long flags, struct module *owner);
+
 extern const struct vb2_mem_ops vb2_dma_sg_memops;
 
 #endif
