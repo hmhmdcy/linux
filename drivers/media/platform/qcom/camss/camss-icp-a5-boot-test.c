@@ -67,7 +67,8 @@ static int cleanup(void)
 	int ret = device_a5 ? camss_a5_stop(device_a5) : 0;
 
 	if (!ret && pinned && !camss_a5_backing_owned(device_a5) &&
-	    !device_a5->cpu_enabled && !device_a5->power_held) {
+	    !device_a5->cpu_enabled && !device_a5->power_held &&
+	    !device_a5->resources.enabled_groups && !device_a5->resources.held_domains) {
 		pinned = false;
 		module_put(THIS_MODULE);
 	}
@@ -179,7 +180,8 @@ done:
 	stop = cleanup();
 	if (stop)
 		ret = stop;
-	if ((camss_a5_backing_owned(a5) || a5->cpu_enabled || a5->power_held) && !pinned) {
+	if ((camss_a5_backing_owned(a5) || a5->cpu_enabled || a5->power_held ||
+	     a5->resources.enabled_groups || a5->resources.held_domains) && !pinned) {
 		__module_get(THIS_MODULE);
 		pinned = true;
 	}
