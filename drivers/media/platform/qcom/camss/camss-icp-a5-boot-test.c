@@ -58,9 +58,8 @@ static u32 test_output_bytes, test_input_crc, test_output_crc;
 static bool enable_frame;
 module_param(enable_frame, bool, 0400);
 
-static int test_frame(struct device *dev, struct camss_a5 *a5)
+static int test_frame(struct camss_a5 *a5)
 {
-	const struct firmware *stripe = NULL;
 	struct camss_a5_ipe_job job = {};
 	u8 *input;
 	unsigned int x, y;
@@ -77,9 +76,6 @@ static int test_frame(struct device *dev, struct camss_a5 *a5)
 		ret = -ENOMEM;
 		goto out;
 	}
-	ret = request_firmware_direct(&stripe, "qcom/sm8150/samurai-ipe382-stripe.bin", dev);
-	if (ret)
-		goto out;
 	for (y = 0; y < 480; y++)
 		for (x = 0; x < 640; x++)
 			input[y * 640 + x] = 16 + ((x / 8 + y / 8 * 3) % 28) * 8;
@@ -90,8 +86,6 @@ static int test_frame(struct device *dev, struct camss_a5 *a5)
 		}
 	}
 	test_input_crc = crc32_le(0, input, TEST_IMAGE_BYTES);
-	job.striping = stripe->data;
-	job.striping_bytes = stripe->size;
 	job.input = input;
 	job.input_bytes = TEST_IMAGE_BYTES;
 	job.output = test_output;
@@ -106,8 +100,6 @@ static int test_frame(struct device *dev, struct camss_a5 *a5)
 		test_output_crc = crc32_le(0, test_output, TEST_IMAGE_BYTES);
 	}
 out:
-	if (stripe)
-		release_firmware(stripe);
 	kvfree(input);
 	return ret;
 }
@@ -507,7 +499,7 @@ static void run_locked(struct device *dev)
 	scratch_observed[1] = session_non_rt.scratch_bytes;
 	if (enable_frame) {
 		phase = "process-ipe-rt";
-		ret = test_frame(dev, a5);
+		ret = test_frame(a5);
 		if (ret)
 			goto done;
 	}

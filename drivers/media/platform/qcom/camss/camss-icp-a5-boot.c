@@ -1283,15 +1283,11 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 	u32 stripe_bytes, iq_offset, scratch_offset, bl_offset;
 	int ret, cleanup;
 
-	if (!a5 || !session || !job || !job->striping ||
+	if (!a5 || !session || !job ||
 	    !job->input || !job->output ||
 	    !job->bl_bytes || job->bl_bytes < 32 ||
 	    !job->max_cores || job->max_cores > 2 || !job->target_time_ns)
 		return -EINVAL;
-	ret = camss_a5_ipe_striping_bytes(job->striping, job->striping_bytes,
-					 &stripe_bytes);
-	if (ret)
-		return ret;
 	mutex_lock(&a5->lock);
 	if (session->a5 != a5 || !session->handle || !session->configured ||
 	    !a5->initialized || !a5->cpu_enabled || !a5->engine_dma_capable) {
@@ -1308,6 +1304,9 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 		ret = -EINVAL;
 		goto done;
 	}
+	ret = camss_a5_ipe_bypass_size(&session->io, job->max_cores, &stripe_bytes);
+	if (ret)
+		goto done;
 	input_bytes = (u64)session->io.input.stride * session->io.input.slice_height;
 	input_bytes += input_bytes / 2;
 	output_bytes = (u64)session->io.output.stride * session->io.output.slice_height;
@@ -1337,7 +1336,11 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 	ret = transfer_alloc(a5, &a5->image_output, IMAGE_OUTPUT_IOVA, PAGE_ALIGN(output_bytes));
 	if (ret)
 		goto release;
-	memcpy(a5->request.cpu + PAGE_SIZE, job->striping, stripe_bytes);
+	ret = camss_a5_ipe_encode_bypass_striping(a5->request.cpu + PAGE_SIZE,
+						 stripe_bytes, &session->io,
+						 job->max_cores, &stripe_bytes);
+	if (ret)
+		goto release;
 	ret = camss_a5_ipe_encode_bypass_iq(a5->request.cpu + iq_offset, CAMSS_A5_IPE_IQ_BYTES);
 	if (ret)
 		goto release;
