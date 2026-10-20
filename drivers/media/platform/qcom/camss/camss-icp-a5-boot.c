@@ -410,7 +410,8 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	writel(1, base + A5_INIT_REQUEST);
 	spin_unlock_irqrestore(&a5->control_lock, flags);
 	ret = readl_poll_timeout(base + A5_INIT_RESPONSE, value,
-				 value || READ_ONCE(a5->boot_expired), 100, 500000);
+				 value == 1 || value == 2 || READ_ONCE(a5->boot_expired),
+				 100, 500000);
 	hrtimer_cancel(&a5->boot_timer);
 	a5->init_response = value;
 	a5->fw_version = readl(base + A5_FW_VERSION);
@@ -420,12 +421,11 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 		ret = -ETIMEDOUT;
 	if (ret)
 		goto fail;
-	/* The retained OEM host rejects 2 and a persistent 0, but continues
-	 * after other nonzero responses. This image/hardware reports 3.
-	 * Treat that as permission to try SYS_INIT, never as proof of success:
-	 * the complete typed response must still acknowledge initialization.
+	/* The retained firmware entry writes 1 only after its host interface
+	 * is ready, or 2 on failure. Other values must not shorten the wait
+	 * and let SYS_INIT race firmware initialization.
 	 */
-	if (value != 1 && value != 3) {
+	if (value != 1) {
 		ret = -EREMOTEIO;
 		goto fail;
 	}
