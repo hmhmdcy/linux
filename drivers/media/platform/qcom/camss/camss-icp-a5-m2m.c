@@ -35,7 +35,7 @@ struct ipe_context {
 struct camss_a5_m2m {
 	struct camss_a5 *a5;
 	struct module *owner;
-	bool (*bound)(void);
+	bool (*bound)(struct device *dev);
 	char *firmware;
 	struct v4l2_device v4l2;
 	struct video_device video;
@@ -120,7 +120,7 @@ static int start_backend(struct camss_a5_m2m *dev)
 
 	if (dev->fatal)
 		return -EIO;
-	if (!dev->bound())
+	if (!dev->bound(dev->a5->dev))
 		return -EAGAIN;
 	if (dev->running)
 		return 0;
@@ -218,7 +218,7 @@ static void device_work(struct work_struct *work)
 		ret = -EIO;
 		goto finish;
 	}
-	if (!dev->bound()) {
+	if (!dev->bound(dev->a5->dev)) {
 		ret = -EAGAIN;
 		goto finish;
 	}
@@ -601,12 +601,12 @@ static void release_device(struct video_device *video)
 
 struct camss_a5_m2m *camss_a5_m2m_register(struct camss_a5 *a5,
 					struct module *owner, const char *firmware,
-					bool (*bound)(void))
+					bool (*bound)(struct device *device))
 {
 	struct camss_a5_m2m *dev;
 	int ret;
 
-	if (!a5 || !owner || !firmware || !bound || !a5->engine_dma_capable ||
+	if (!a5 || !firmware || !bound || !a5->engine_dma_capable ||
 	    backing_owned(a5))
 		return ERR_PTR(-EINVAL);
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
@@ -752,7 +752,7 @@ ssize_t camss_a5_m2m_status(struct camss_a5_m2m *dev, char *buffer, size_t size)
 		dev->users, dev->running ? "true" : "false", dev->fatal ? "true" : "false",
 		dev->power_pin ? "true" : "false", orphans,
 		(unsigned long long)dev->jobs, (unsigned long long)dev->completed,
-		module_refcount(dev->owner), dev->first_error,
+		dev->owner ? module_refcount(dev->owner) : 0, dev->first_error,
 		(unsigned long long)dev->direct_completed,
 		(unsigned long long)dev->cancelled, (unsigned long long)dev->failed,
 		(unsigned long long)dev->starts,

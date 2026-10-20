@@ -6145,10 +6145,33 @@ static struct platform_driver qcom_camss_driver = {
 		.name = "qcom-camss",
 		.of_match_table = camss_dt_match,
 		.pm = &camss_pm_ops,
+		/* Static ICP DMA backing pins this shared module owner. */
+		.suppress_bind_attrs = IS_ENABLED(CONFIG_VIDEO_QCOM_CAMSS_ICP),
 	},
 };
 
-module_platform_driver(qcom_camss_driver);
+#if IS_ENABLED(CONFIG_VIDEO_QCOM_CAMSS_ICP)
+extern struct platform_driver camss_icp_driver;
+#endif
+
+static struct platform_driver * const camss_drivers[] = {
+	&qcom_camss_driver,
+#if IS_ENABLED(CONFIG_VIDEO_QCOM_CAMSS_ICP)
+	&camss_icp_driver,
+#endif
+};
+
+static int __init camss_init(void)
+{
+	return platform_register_drivers(camss_drivers, ARRAY_SIZE(camss_drivers));
+}
+module_init(camss_init);
+
+static void __exit camss_exit(void)
+{
+	platform_unregister_drivers(camss_drivers, ARRAY_SIZE(camss_drivers));
+}
+module_exit(camss_exit);
 
 MODULE_DESCRIPTION("Qualcomm Camera Subsystem driver");
 MODULE_AUTHOR("Todor Tomov <todor.tomov@linaro.org>");

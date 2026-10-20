@@ -33,3 +33,15 @@ config VIDEO_QCOM_CAMSS_ICP_A5_M2M
 	depends on VIDEO_QCOM_CAMSS_ICP_A5_CORE && VIDEO_DEV
 	select V4L2_MEM2MEM_DEV
 	select VIDEOBUF2_DMA_SG
+
+config VIDEO_QCOM_CAMSS_ICP
+	bool "Qualcomm SM8150 ICP/IPE support"
+	depends on VIDEO_QCOM_CAMSS && IOMMU_DMA && OF && PM && PM_GENERIC_DOMAINS && RESET_CONTROLLER
+	select VIDEO_QCOM_CAMSS_ICP_A5_CORE if VIDEO_QCOM_CAMSS
+	select VIDEO_QCOM_CAMSS_ICP_A5_M2M if VIDEO_QCOM_CAMSS
+	help
+	  Register the SM8150 ICP/IPE platform driver in the CAMSS module.
+	  Firmware and frame processing start when V4L2 queues have work.
+	  Open streams, exported buffers and retained DMA pin the shared
+	  CAMSS/ICP module owner. These static devices do not expose manual
+	  driver unbind. Board firmware RAM and IOVA reservations are required.

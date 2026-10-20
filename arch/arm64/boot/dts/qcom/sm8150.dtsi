@@ -3982,7 +3982,7 @@
 			};
 		};
 
-		/* A5 firmware backend; board memory and a driver are needed to enable it. */
+		/* A5 and its BPS/IPE engines share a firmware-managed DMA domain. */
 		camss_icp: icp@ac10000 {
 			compatible = "qcom,sm8150-camss-icp";
 			reg = <0 0x0ac10000 0 0x8000>,
@@ -3992,7 +3992,13 @@
 			reg-names = "sierra", "bps", "ipe0", "ipe1";
 			interrupts = <GIC_SPI 463 IRQ_TYPE_EDGE_RISING>;
 			qcom,camss = <&camss>;
-			iommus = <&apps_smmu 0x2222 0>;
+			iommus = <&apps_smmu 0x2222 0x0>,
+				 <&apps_smmu 0x2080 0x20>,
+				 <&apps_smmu 0x20a0 0x20>,
+				 <&apps_smmu 0x2100 0x20>,
+				 <&apps_smmu 0x2120 0x20>,
+				 <&apps_smmu 0x20c0 0x0>,
+				 <&apps_smmu 0x2140 0x0>;
 			clocks = <&camcc CAM_CC_FAST_AHB_CLK_SRC>,
 				 <&camcc CAM_CC_ICP_AHB_CLK>,
 				 <&camcc CAM_CC_ICP_CLK_SRC>,

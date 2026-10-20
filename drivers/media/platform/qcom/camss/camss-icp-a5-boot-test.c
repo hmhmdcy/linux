@@ -46,7 +46,7 @@ static int overlay_id, test_error;
 static bool finished, pinned, held_failure;
 static bool bound_seen;
 module_param(bound_seen, bool, 0444);
-static bool m2m_bound(void)
+static bool m2m_bound(struct device *dev)
 {
 	return READ_ONCE(bound_seen);
 }

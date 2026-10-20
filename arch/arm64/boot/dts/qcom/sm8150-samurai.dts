@@ -1093,8 +1093,31 @@
 	vddio-supply = <&vreg_l1c_1p8>;
 };
 
-/* Original 19781 board reservation. The unvalidated ICP backend stays dormant. */
+/* The physical firmware RAM remains the original 19781 camera reservation.
+ * Address-only reservations below describe the A5 firmware IOVA ABI, not RAM.
+ */
 &camss_icp {
-	memory-region = <&camera_mem>;
-	memory-region-names = "firmware";
+	status = "okay";
+	firmware-name = "qcom/sm8150/camera-icp.elf";
+	memory-region = <&camera_mem>, <&icp_fw_iova>, <&icp_shared_iova>,
+			<&icp_heap_iova>, <&icp_trace_iova>, <&icp_images_iova>;
+	memory-region-names = "firmware", "firmware-iova", "shared", "heap", "trace", "images";
+};
+
+&{/reserved-memory} {
+	icp_fw_iova: reservation-icp-firmware {
+		iommu-addresses = <&camss_icp 0 0 0 0x00500000>;
+	};
+	icp_shared_iova: reservation-icp-shared {
+		iommu-addresses = <&camss_icp 0 0x07400000 0 0x09600000>;
+	};
+	icp_heap_iova: reservation-icp-heap {
+		iommu-addresses = <&camss_icp 0 0x10a00000 0 0x00100000>;
+	};
+	icp_trace_iova: reservation-icp-trace {
+		iommu-addresses = <&camss_icp 0 0x10b00000 0 0x00100000>;
+	};
+	icp_images_iova: reservation-icp-images {
+		iommu-addresses = <&camss_icp 0 0x20000000 0 0x08000000>;
+	};
 };
