@@ -807,6 +807,30 @@ static int prepare_memory(struct camss_a5 *a5, const struct firmware *firmware)
 	return camss_a5_fw_memory_map(&a5->config);
 }
 
+/* A forced reset must not leave the ICP/AHB bridge held in reset while
+ * retiring its DMA aliases. Reuse the cold-start reset pulse, then prove
+ * that releasing reset did not release the A5 CPU. A failed release/readback
+ * retains ownership and is retried before any CSR access on the next stop.
+ */
+static int deassert_stopped_reset_locked(struct camss_a5 *a5)
+{
+	u32 control;
+	int ret;
+
+	ret = reset_control_deassert(a5->reset);
+	if (ret)
+		return ret;
+	a5->reset_asserted = false;
+	control = readl(a5->resources.sierra + A5_CONTROL);
+	if (control & (A5_ENABLE | A5_WAKE)) {
+		/* Treat an observed enabled CPU as live even after failed boot. */
+		a5->cpu_enabled = true;
+		a5->initialized = false;
+		return -EIO;
+	}
+	return 0;
+}
+
 static int quiesce_locked(struct camss_a5 *a5)
 {
 	void __iomem *base = a5->resources.sierra;
@@ -815,6 +839,13 @@ static int quiesce_locked(struct camss_a5 *a5)
 	int ret;
 
 	hrtimer_cancel(&a5->boot_timer);
+	if (a5->reset_asserted) {
+		ret = deassert_stopped_reset_locked(a5);
+		if (ret)
+			return ret;
+		a5->cpu_enabled = false;
+		a5->initialized = false;
+	}
 	if (a5->cpu_enabled) {
 		if (a5->initialized && a5->irq_enabled &&
 		    !a5->session_uncertain && !a5->session_count) {
@@ -847,13 +878,20 @@ static int quiesce_locked(struct camss_a5 *a5)
 			a5->pc_error = -EIO;
 		}
 		if (!cooperative) {
-			/* Failed/uninitialized firmware needs a forced reset. A reset
-			 * failure must retain the CPU, RAM and runtime-PM ownership.
+			/* Keep the forced reset guarantee for unknown completion,
+			 * but reopen the bridge before IPE quiesce or DMA unmap.
+			 * Every failed step keeps RAM/PM and any pending image DMA.
 			 */
 			ret = reset_control_assert(a5->reset);
 			if (ret)
 				return ret;
 			a5->reset_asserted = true;
+			a5->initialized = false;
+			udelay(2); /* same verified pulse as the cold-start path */
+			ret = deassert_stopped_reset_locked(a5);
+			if (ret)
+				return ret;
+			dev_info(a5->dev, "A5 forced reset pulse complete; CPU enable/wake clear\n");
 		}
 		a5->cpu_enabled = false;
 		a5->initialized = false;
@@ -1115,8 +1153,8 @@ int camss_a5_runtime_suspend(struct camss_a5 *a5)
 		return -EBUSY;
 	/* A cooperative stop has already disabled A5 through its local CSR.
 	 * Do not assert the global ICP/AHB reset in the normal PM path.
-	 * A forced stop has asserted it already; resume releases it before
-	 * enabling any clocks. The next explicit start owns the reset cycle.
+	 * A forced stop has pulsed reset and verified the CPU is disabled.
+	 * Keep the bridge accessible through DMA retirement and power-down.
 	 */
 	return camss_a5_resources_suspend(&a5->resources);
 }
