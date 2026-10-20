@@ -178,8 +178,13 @@ static void process_message(struct camss_a5 *a5, size_t bytes)
 	default:
 		goto malformed;
 	}
-	WRITE_ONCE(a5->command_error, error ? -EREMOTEIO : 0);
-	complete(&a5->response);
+	/* A successful packet must not erase a concurrent watchdog/protocol
+	 * failure latched by the hard IRQ or an earlier packet in this batch.
+	 */
+	if (error)
+		command_failure(a5, -EREMOTEIO);
+	else
+		complete(&a5->response);
 	return;
 malformed:
 	a5->protocol_errors++;
@@ -235,6 +240,8 @@ done:
 	 * fields or reusing the pending token/handle state.
 	 */
 	synchronize_irq(a5->irq);
+	if (!ret)
+		ret = READ_ONCE(a5->command_error);
 	return ret;
 }
 
@@ -266,7 +273,7 @@ static void session_command_failed(struct camss_a5 *a5, int ret)
 	/* Once enqueued, timeout or an unrecognizable response can leave an
 	 * unknown live firmware handle. Do not issue another session command.
 	 */
-	if (a5->command_queued && (ret == -ETIMEDOUT || !a5->session_reply))
+	if (a5->command_queued && (ret != -EREMOTEIO || !a5->session_reply))
 		a5->session_uncertain = true;
 }
 
