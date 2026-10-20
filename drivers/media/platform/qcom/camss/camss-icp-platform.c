@@ -169,6 +169,8 @@ static int camss_icp_probe(struct platform_device *pdev)
 	ret = of_property_read_string(dev->of_node, "firmware-name", &firmware);
 	if (ret && ret != -EINVAL)
 		return dev_err_probe(dev, ret, "Invalid firmware-name\n");
+	if (!firmware[0])
+		return dev_err_probe(dev, -EINVAL, "Empty firmware-name\n");
 	platform_set_drvdata(pdev, icp);
 	pm_runtime_set_suspended(dev);
 	pm_runtime_enable(dev);

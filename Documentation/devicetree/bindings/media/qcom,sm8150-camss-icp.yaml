@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/qcom,sm8150-camss-icp.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm SM8150 Camera Image Co-Processor
+
+maintainers:
+  - Bryan O'Donoghue <bryan.odonoghue@linaro.org>
+
+description: |
+  The Cortex-A5 firmware processor controls the BPS and two IPE engines.
+  These engines share one DMA domain. The CAMSS supplier owns shared CPAS,
+  camera interconnect votes and the top-level camera power resources.
+  Firmware RAM is a board reservation. Address-only reserved-memory nodes
+  describe the firmware IOVA ABI and do not reserve additional physical RAM.
+
+properties:
+  $nodename:
+    pattern: '^icp@[0-9a-f]+$'
+
+  compatible:
+    const: qcom,sm8150-camss-icp
+
+  reg:
+    maxItems: 4
+
+  reg-names:
+    items:
+      - const: sierra
+      - const: bps
+      - const: ipe0
+      - const: ipe1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 19
+
+  clock-names:
+    items:
+      - const: fast_ahb_src
+      - const: icp_ahb
+      - const: icp_src
+      - const: icp
+      - const: bps_ahb
+      - const: bps_areg
+      - const: bps_axi
+      - const: bps_src
+      - const: bps
+      - const: ipe0_ahb
+      - const: ipe0_areg
+      - const: ipe0_axi
+      - const: ipe_src
+      - const: ipe0
+      - const: ipe1_ahb
+      - const: ipe1_areg
+      - const: ipe1_axi
+      - const: ipe1_src
+      - const: ipe1
+
+  power-domains:
+    maxItems: 3
+
+  power-domain-names:
+    items:
+      - const: bps
+      - const: ipe0
+      - const: ipe1
+
+  resets:
+    maxItems: 1
+
+  reset-names:
+    const: icp
+
+  qcom,camss:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: CAMSS supplier for CPAS, common clocks and interconnects.
+
+  iommus:
+    maxItems: 7
+    description: A5, BPS read/write/CDM and IPE read/write/CDM stream groups.
+
+  memory-region:
+    maxItems: 6
+
+  memory-region-names:
+    items:
+      - const: firmware
+      - const: firmware-iova
+      - const: shared
+      - const: heap
+      - const: trace
+      - const: images
+
+  firmware-name:
+    $ref: /schemas/types.yaml#/definitions/string
+    minLength: 1
+
+  '#address-cells':
+    const: 2
+
+  '#size-cells':
+    const: 2
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - clocks
+  - clock-names
+  - power-domains
+  - power-domain-names
+  - resets
+  - reset-names
+  - qcom,camss
+  - iommus
+  - memory-region
+  - memory-region-names
+
+additionalProperties: false
