@@ -2,6 +2,7 @@
 /* SM8150 A5 firmware transport. No image sessions or IPE commands yet. */
 #include <linux/bitops.h>
 #include <linux/delay.h>
+#include <linux/devcoredump.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -12,6 +13,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/unaligned.h>
+#include <linux/vmalloc.h>
 
 #include "camss-icp-a5-boot.h"
 
@@ -207,6 +209,66 @@ bool camss_a5_backing_owned(const struct camss_a5 *a5)
 }
 EXPORT_SYMBOL_GPL(camss_a5_backing_owned);
 
+/* Fixed little-endian diagnostic record; no image or tuning buffers. */
+struct camss_a5_start_dump {
+	char magic[8];
+	__le32 version;
+	__le32 init_response, fw_version;
+	__le32 queue_state[6];
+	__le32 interrupts, watchdogs, protocol_errors;
+	char sfr[512];
+};
+
+static void capture_shared_state(struct camss_a5 *a5)
+{
+	u32 declared;
+	size_t bytes;
+	unsigned int i;
+
+	if (!a5->shared.cpu || a5->table != a5->shared.cpu ||
+	    a5->shared.bytes < sizeof(*a5->table))
+		return;
+	dma_rmb();
+	for (i = 0; i < CAMSS_A5_QUEUE_COUNT; i++) {
+		a5->queue_state[i * 2] = le32_to_cpu(READ_ONCE(a5->table->queues[i].read));
+		a5->queue_state[i * 2 + 1] = le32_to_cpu(READ_ONCE(a5->table->queues[i].write));
+	}
+	memset(a5->sfr, 0, sizeof(a5->sfr));
+	if (a5->shared.bytes <= SFR_OFFSET + sizeof(__le32))
+		return;
+	declared = get_unaligned_le32(a5->shared.cpu + SFR_OFFSET);
+	if (declared <= sizeof(__le32))
+		return;
+	bytes = min_t(size_t, declared - sizeof(__le32), sizeof(a5->sfr) - 1);
+	bytes = min_t(size_t, bytes, a5->shared.bytes - SFR_OFFSET - sizeof(__le32));
+	memcpy(a5->sfr, a5->shared.cpu + SFR_OFFSET + sizeof(__le32), bytes);
+}
+
+static void publish_start_failure(struct camss_a5 *a5)
+{
+	struct camss_a5_start_dump *dump;
+	unsigned int i;
+
+	if (!a5->cpu_release_attempted)
+		return;
+	capture_shared_state(a5);
+	dump = vzalloc(sizeof(*dump));
+	if (!dump)
+		return;
+	memcpy(dump->magic, "CAMSSA5", sizeof(dump->magic));
+	dump->version = cpu_to_le32(1);
+	dump->init_response = cpu_to_le32(a5->init_response);
+	dump->fw_version = cpu_to_le32(a5->fw_version);
+	for (i = 0; i < ARRAY_SIZE(dump->queue_state); i++)
+		dump->queue_state[i] = cpu_to_le32(a5->queue_state[i]);
+	dump->interrupts = cpu_to_le32(READ_ONCE(a5->interrupts));
+	dump->watchdogs = cpu_to_le32(READ_ONCE(a5->watchdogs));
+	dump->protocol_errors = cpu_to_le32(READ_ONCE(a5->protocol_errors));
+	memcpy(dump->sfr, a5->sfr, sizeof(dump->sfr));
+	/* Publish before power-down or IOMMU teardown can lose the evidence. */
+	dev_coredumpv(a5->dev, dump, sizeof(*dump), GFP_KERNEL);
+}
+
 static int free_memory(struct camss_a5 *a5)
 {
 	struct camss_a5_fw_memory *memories[] = { &a5->heap, &a5->shared, &a5->firmware };
@@ -215,14 +277,7 @@ static int free_memory(struct camss_a5 *a5)
 
 	if (a5->cpu_enabled)
 		return -EBUSY;
-	if (a5->shared.cpu && a5->table) {
-		for (i = 0; i < CAMSS_A5_QUEUE_COUNT; i++) {
-			a5->queue_state[i * 2] = le32_to_cpu(READ_ONCE(a5->table->queues[i].read));
-			a5->queue_state[i * 2 + 1] = le32_to_cpu(READ_ONCE(a5->table->queues[i].write));
-		}
-		memcpy(a5->sfr, a5->shared.cpu + SFR_OFFSET + 4, sizeof(a5->sfr) - 1);
-		a5->sfr[sizeof(a5->sfr) - 1] = 0;
-	}
+	capture_shared_state(a5);
 	for (i = 0; i < ARRAY_SIZE(memories); i++) {
 		ret = camss_a5_fw_memory_unmap(memories[i]);
 		if (ret)
@@ -286,7 +341,7 @@ static int stop_locked(struct camss_a5 *a5)
 {
 	void __iomem *base = a5->resources.sierra;
 	u32 value;
-	int ret, error = 0;
+	int ret;
 
 	hrtimer_cancel(&a5->boot_timer);
 	if (a5->cpu_enabled) {
@@ -321,14 +376,20 @@ static int stop_locked(struct camss_a5 *a5)
 		disable_irq(a5->irq);
 		a5->irq_enabled = false;
 	}
+	capture_shared_state(a5);
+	/* Retire all firmware DMA aliases while the supplier is still powered.
+	 * A failed unmap keeps the PM reference and backing for a later retry.
+	 */
+	ret = free_memory(a5);
+	if (ret)
+		return ret;
 	if (a5->power_held) {
 		ret = pm_runtime_put_sync_suspend(a5->dev);
 		a5->power_held = false;
 		if (ret < 0)
-			error = ret;
+			return ret;
 	}
-	ret = free_memory(a5);
-	return ret ? ret : error;
+	return 0;
 }
 
 int camss_a5_stop(struct camss_a5 *a5)
@@ -410,7 +471,8 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	writel(1, base + A5_INIT_REQUEST);
 	spin_unlock_irqrestore(&a5->control_lock, flags);
 	ret = readl_poll_timeout(base + A5_INIT_RESPONSE, value,
-				 value == 1 || value == 2 || READ_ONCE(a5->boot_expired),
+				 value == 1 || value == 2 || value == 3 ||
+				 READ_ONCE(a5->boot_expired),
 				 100, 500000);
 	hrtimer_cancel(&a5->boot_timer);
 	a5->init_response = value;
@@ -421,9 +483,9 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 		ret = -ETIMEDOUT;
 	if (ret)
 		goto fail;
-	/* The retained firmware entry writes 1 only after its host interface
-	 * is ready, or 2 on failure. Other values must not shorten the wait
-	 * and let SYS_INIT race firmware initialization.
+	/* The retained entry reports 1/2 for ready/initialization failure.
+	 * SendSfrMessage publishes 3 after its error record, so it is terminal
+	 * failure too. Never send SYS_INIT after a firmware SFR error.
 	 */
 	if (value != 1) {
 		ret = -EREMOTEIO;
@@ -437,6 +499,7 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	dev_info(a5->dev, "A5 SYS_INIT acknowledged\n");
 	goto unlock;
 fail:
+	publish_start_failure(a5);
 	a5->cleanup_error = stop_locked(a5);
 unlock:
 	mutex_unlock(&a5->lock);
