@@ -3,6 +3,7 @@
 #define CAMSS_ICP_A5_IPE_H
 
 #include "camss-icp-a5-boot.h"
+#include "camss-icp-a5-colour.h"
 
 #define CAMSS_A5_IPE_FRAME_BYTES 3816U
 #define CAMSS_A5_IPE_IQ_BYTES 2584U
@@ -59,6 +60,15 @@ enum camss_a5_ipe_result {
 int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *session,
 			  const struct camss_a5_ipe_job *job,
 			  enum camss_a5_ipe_result *result);
+/* Typed, synchronous colour extension; the legacy job layout is unchanged.
+ * The core copies/validates cc before any firmware MAP. NULL retains bypass.
+ * Colour/program storage uses the existing retained request parcel.
+ */
+int camss_a5_ipe_run_colour_status(struct camss_a5 *a5,
+				 struct camss_a5_session *session,
+				 const struct camss_a5_ipe_job *job,
+				 const struct camss_a5_ipe_cc *cc,
+				 enum camss_a5_ipe_result *result);
 int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 		     const struct camss_a5_ipe_job *job);
 

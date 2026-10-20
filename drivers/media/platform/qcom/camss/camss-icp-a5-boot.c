@@ -1341,11 +1341,15 @@ static bool transfer_released(struct camss_a5 *a5)
 	       !a5->dma_input.buffer && !a5->dma_output.buffer;
 }
 
-int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *session,
-			  const struct camss_a5_ipe_job *job,
-			  enum camss_a5_ipe_result *result)
+static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *session,
+			     const struct camss_a5_ipe_job *job,
+			     const struct camss_a5_ipe_cc *cc,
+			     enum camss_a5_ipe_result *result)
 {
 	struct camss_a5_ipe_frame frame = {};
+	struct camss_a5_ipe_cc colour;
+	u8 colour_command[CAMSS_A5_IPE_CC_COMMAND_BYTES];
+	u32 iq_bytes = cc ? CAMSS_A5_IPE_CC_IQ_BYTES : CAMSS_A5_IPE_IQ_BYTES;
 	u8 packet[40] = {};
 	u64 input_bytes, output_bytes, parcel;
 	u32 stripe_bytes, iq_offset, scratch_offset, bl_offset;
@@ -1371,6 +1375,12 @@ int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *sessio
 	}
 	/* Only a configured, coherent engine may reject a job locally. */
 	local_ready = true;
+	if (cc) {
+		colour = *cc;
+		ret = camss_a5_ipe_cc_encode(colour_command, sizeof(colour_command), &colour);
+		if (ret)
+			goto done;
+	}
 	if ((direct && (!job->input_dma || !job->output_dma || job->input || job->output)) ||
 	    (!direct && (!job->input || !job->output || job->input_offset || job->output_offset)) ||
 	    !job->bl_bytes || job->bl_bytes < 32 ||
@@ -1399,7 +1409,7 @@ int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *sessio
 	}
 	/* The stripe begins on its own page after the frame packet. */
 	iq_offset = PAGE_SIZE + PAGE_ALIGN(stripe_bytes);
-	scratch_offset = iq_offset + PAGE_ALIGN(CAMSS_A5_IPE_IQ_BYTES);
+	scratch_offset = iq_offset + PAGE_ALIGN(iq_bytes);
 	bl_offset = scratch_offset + PAGE_ALIGN(session->scratch_bytes);
 	parcel = PAGE_ALIGN((u64)bl_offset + job->bl_bytes);
 	if (!session->scratch_bytes || parcel > REQUEST_MAX) {
@@ -1429,7 +1439,11 @@ int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *sessio
 						 job->max_cores, &stripe_bytes);
 	if (ret)
 		goto release;
-	ret = camss_a5_ipe_encode_bypass_iq(a5->request.cpu + iq_offset, CAMSS_A5_IPE_IQ_BYTES);
+	if (cc)
+		ret = camss_a5_ipe_encode_cc_iq(a5->request.cpu + iq_offset, iq_bytes,
+					      REQUEST_IOVA + iq_offset, &colour);
+	else
+		ret = camss_a5_ipe_encode_bypass_iq(a5->request.cpu + iq_offset, iq_bytes);
 	if (ret)
 		goto release;
 	if (!direct) {
@@ -1437,7 +1451,7 @@ int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *sessio
 		memset(a5->image_output.cpu, 0xa5, output_bytes);
 	}
 	frame.striping = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + PAGE_SIZE, stripe_bytes };
-	frame.iq = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + iq_offset, CAMSS_A5_IPE_IQ_BYTES };
+	frame.iq = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + iq_offset, iq_bytes };
 	frame.scratch = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + scratch_offset, session->scratch_bytes };
 	frame.bl = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + bl_offset, job->bl_bytes };
 	frame.input = (struct camss_a5_ipe_buffer){ direct ? a5->dma_input.iova : IMAGE_INPUT_IOVA, input_bytes };
@@ -1452,6 +1466,11 @@ int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *sessio
 					 &session->io, &frame);
 	if (ret)
 		goto release;
+	if (cc) {
+		put_unaligned_le32(REQUEST_IOVA + iq_offset + CAMSS_A5_IPE_CC_ARRAY_OFFSET,
+				   a5->request.cpu + 40);
+		put_unaligned_le32(CAMSS_A5_IPE_CC_POST_OFFSET, a5->request.cpu + 48);
+	}
 	dma_wmb();
 	/* Any attempted firmware MAP crosses the conservative reset boundary. */
 	firmware_attempted = true;
@@ -1517,7 +1536,23 @@ done:
 	mutex_unlock(&a5->lock);
 	return ret;
 }
+int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *session,
+			  const struct camss_a5_ipe_job *job,
+			  enum camss_a5_ipe_result *result)
+{
+	return run_colour_status(a5, session, job, NULL, result);
+}
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run_status);
+
+int camss_a5_ipe_run_colour_status(struct camss_a5 *a5,
+				 struct camss_a5_session *session,
+				 const struct camss_a5_ipe_job *job,
+				 const struct camss_a5_ipe_cc *cc,
+				 enum camss_a5_ipe_result *result)
+{
+	return run_colour_status(a5, session, job, cc, result);
+}
+EXPORT_SYMBOL_GPL(camss_a5_ipe_run_colour_status);
 
 /* Preserve existing in-kernel callers and their conservative errno contract. */
 int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
