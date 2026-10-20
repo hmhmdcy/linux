@@ -504,11 +504,10 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	/* Match the OEM cold-boot sequence: CPU reset precedes HFI parameter
 	 * programming. Never request initialization with unverified pointers.
 	 */
+	writel(A5_ENABLE | A5_WAKE | A5_WFI_GATE, base + A5_CONTROL);
 	ret = program_hfi_parameters(a5);
-	if (!ret) {
-		writel(A5_ENABLE | A5_WAKE | A5_WFI_GATE, base + A5_CONTROL);
+	if (!ret)
 		writel(1, base + A5_INIT_REQUEST);
-	}
 	spin_unlock_irqrestore(&a5->control_lock, flags);
 	if (ret) {
 		hrtimer_cancel(&a5->boot_timer);
