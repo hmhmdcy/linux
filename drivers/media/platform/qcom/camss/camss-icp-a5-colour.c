@@ -19,7 +19,7 @@ int camss_a5_ipe_cc_encode(void *destination, u32 bytes,
 		if (cc->matrix[i] < -2048 || cc->matrix[i] > 2047)
 			return -ERANGE;
 	for (i = 0; i < 3; i++)
-		if (cc->offset[i] < -4096 || cc->offset[i] > 4095)
+		if (cc->offset[i] < -1024 || cc->offset[i] > 1023)
 			return -ERANGE;
 
 	/* The IPE register order is GBR, including its output rows. */
@@ -32,9 +32,9 @@ int camss_a5_ipe_cc_encode(void *destination, u32 bytes,
 	words[4] = (cc->matrix[3] & 0xfff) |
 		   ((cc->matrix[6] & 0xfff) << 16);
 	words[5] = cc->matrix[0] & 0xfff;
-	words[6] = (cc->offset[1] & 0x1fff) |
-		   ((cc->offset[2] & 0x1fff) << 16);
-	words[7] = cc->offset[0] & 0x1fff;
+	words[6] = (cc->offset[1] & 0x7ff) |
+		   ((cc->offset[2] & 0x7ff) << 16);
+	words[7] = cc->offset[0] & 0x7ff;
 	words[8] = cc->shift;
 
 	/* Only this fixed post-LTM range is encoded; no arbitrary CDM input. */

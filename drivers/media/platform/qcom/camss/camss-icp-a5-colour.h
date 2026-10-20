@@ -10,7 +10,8 @@
 #define CAMSS_A5_IPE_CC_PACKET_OFFSET 2656U
 #define CAMSS_A5_IPE_CC_IQ_BYTES 2700U
 
-/* RGB row-major matrix at Q(7 + shift); offsets are RGB signed integers. */
+/* RGB row-major matrix at Q(7 + shift); offsets are RGB signed 11-bit integers.
+ * The target IPE caller uses HAL output type 2 (type 1 has 13-bit offsets). */
 struct camss_a5_ipe_cc {
 	s16 matrix[9];
 	s16 offset[3];
