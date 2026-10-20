@@ -47,6 +47,7 @@ struct camss_a5_m2m {
 	struct mutex video_lock, hw_lock;
 	struct list_head contexts;
 	u32 users;
+	int first_error;
 	bool running, fatal, power_pin, removing, mc_registered, media_registered;
 	u64 jobs, completed, direct_completed, cancelled, failed, starts, stops;
 };
@@ -247,8 +248,12 @@ finish:
 		ret = -ECANCELED;
 	if (ret == -ECANCELED)
 		dev->cancelled++;
-	else if (ret)
+	else if (ret) {
 		dev->failed++;
+		if (!dev->first_error)
+			dev->first_error = ret;
+		dev_info(dev->a5->dev, "IPE m2m job failed ret=%d\n", ret);
+	}
 	else {
 		dev->completed++;
 		dev->direct_completed++;
@@ -728,11 +733,11 @@ ssize_t camss_a5_m2m_status(struct camss_a5_m2m *dev, char *buffer, size_t size)
 	ret = scnprintf(buffer, size,
 		"{\"registered\":true,\"users\":%u,\"running\":%s,\"fatal\":%s,"
 		"\"pinned\":%s,\"orphans\":%u,\"jobs\":%llu,\"completed\":%llu,"
-		"\"direct_completed\":%llu,\"cancelled\":%llu,\"failed\":%llu,\"starts\":%llu,\"stops\":%llu}\n",
+		"\"first_error\":%d,\"direct_completed\":%llu,\"cancelled\":%llu,\"failed\":%llu,\"starts\":%llu,\"stops\":%llu}\n",
 		dev->users, dev->running ? "true" : "false", dev->fatal ? "true" : "false",
 		dev->power_pin ? "true" : "false", orphans,
 		(unsigned long long)dev->jobs, (unsigned long long)dev->completed,
-		(unsigned long long)dev->direct_completed,
+		dev->first_error, (unsigned long long)dev->direct_completed,
 		(unsigned long long)dev->cancelled, (unsigned long long)dev->failed,
 		(unsigned long long)dev->starts,
 		(unsigned long long)dev->stops);

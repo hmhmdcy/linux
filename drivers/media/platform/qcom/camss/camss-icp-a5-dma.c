@@ -136,33 +136,35 @@ struct image_range {
 static int physical_ranges(const struct camss_a5_dma_image *image,
 			   struct image_range *ranges, unsigned int *count)
 {
-	struct scatterlist *sg;
-	u64 skip = image->offset, remaining = image->bytes;
-	unsigned int i, used = 0;
+	u64 address = image->iova, remaining = image->bytes;
+	unsigned int used = 0;
 
-	for_each_sgtable_sg(image->sgt, sg, i) {
-		u64 take;
-		phys_addr_t physical;
+	/* DMA-BUF importers must use DMA addresses only. DMABUF_DEBUG returns
+	 * a table with page/physical-length fields removed. Resolve aliases
+	 * through our own, pinned DMA domain instead of exporter SG internals.
+	 */
+	while (remaining) {
+		u64 offset = address & (PAGE_SIZE - 1);
+		u64 take = min_t(u64, remaining, PAGE_SIZE - offset);
+		phys_addr_t physical = iommu_iova_to_phys(image->domain, address - offset);
+		phys_addr_t first, last;
 
-		if (!sg->length || !sg_page(sg))
-			return -EINVAL;
-		if (skip >= sg->length) {
-			skip -= sg->length;
-			continue;
-		}
-		physical = sg_phys(sg);
-		take = min_t(u64, remaining, sg->length - skip);
-		if (physical + skip < physical || physical + skip + take - 1 < physical + skip)
+		if (!physical || !IS_ALIGNED(physical, PAGE_SIZE))
+			return -EFAULT;
+		if (physical + offset < physical || physical + offset + take - 1 < physical + offset)
 			return -ERANGE;
-		ranges[used++] = (struct image_range){ physical + skip, physical + skip + take - 1 };
+		first = physical + offset;
+		last = first + take - 1;
+		if (used && ranges[used - 1].last != (phys_addr_t)~0ULL &&
+		    ranges[used - 1].last + 1 == first)
+			ranges[used - 1].last = last;
+		else
+			ranges[used++] = (struct image_range){ first, last };
 		remaining -= take;
-		if (!remaining) {
-			*count = used;
-			return 0;
-		}
-		skip = 0;
+		address += take;
 	}
-	return -EINVAL;
+	*count = used;
+	return 0;
 }
 
 static int range_compare(const void *left, const void *right)
@@ -183,10 +185,17 @@ int camss_a5_dma_images_disjoint(const struct camss_a5_dma_image *input,
 	int ret;
 
 	if (!input || !output || !input->buffer || !output->buffer ||
-	    !input->sgt || !output->sgt || input->buffer == output->buffer)
+	    !input->sgt || !output->sgt || !input->iova || !output->iova ||
+	    !input->bytes || !output->bytes || input->buffer == output->buffer)
 		return -EINVAL;
-	in = kvmalloc_array(input->sgt->orig_nents, sizeof(*in), GFP_KERNEL);
-	out = kvmalloc_array(output->sgt->orig_nents, sizeof(*out), GFP_KERNEL);
+	if (input->domain != output->domain ||
+	    iommu_get_domain_for_dev(input->device) != input->domain ||
+	    iommu_get_domain_for_dev(output->device) != output->domain)
+		return -EXDEV;
+	ni = DIV_ROUND_UP((u64)(input->iova & (PAGE_SIZE - 1)) + input->bytes, PAGE_SIZE);
+	no = DIV_ROUND_UP((u64)(output->iova & (PAGE_SIZE - 1)) + output->bytes, PAGE_SIZE);
+	in = kvmalloc_array(ni, sizeof(*in), GFP_KERNEL);
+	out = kvmalloc_array(no, sizeof(*out), GFP_KERNEL);
 	if (!in || !out) {
 		ret = -ENOMEM;
 		goto done;
