@@ -71,6 +71,10 @@ struct camss_a5_fw_memory {
 	dma_addr_t dma;
 	u32 bytes;
 	u32 mapped;
+	u32 iova;
+	bool privileged;
+	bool carveout;
+	phys_addr_t physical;
 };
 
 /* The owning platform driver serializes these lifecycle operations, keeps
@@ -78,8 +82,16 @@ struct camss_a5_fw_memory {
  * Start with a zeroed structure. A map failure normally rolls back; if an
  * unmap fails, mapped remains nonzero and freeing the backing is refused.
  */
+/* Allocate RAM for a fixed alias fully covered by a reserved IOVA region. */
+int camss_a5_iova_memory_alloc(struct device *device,
+			       struct camss_a5_fw_memory *memory,
+			       u32 iova, u32 bytes);
 int camss_a5_fw_memory_alloc(struct device *device,
 			     struct camss_a5_fw_memory *memory);
+/* Caller owns a DT-reserved, no-map firmware RAM resource. */
+int camss_a5_fw_carveout_alloc(struct device *device,
+			       struct camss_a5_fw_memory *memory,
+			       phys_addr_t physical, u32 bytes);
 int camss_a5_fw_memory_map(struct camss_a5_fw_memory *memory);
 int camss_a5_fw_memory_unmap(struct camss_a5_fw_memory *memory);
 int camss_a5_fw_memory_free(struct camss_a5_fw_memory *memory);
