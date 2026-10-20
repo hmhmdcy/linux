@@ -3,8 +3,6 @@
  * Unity-scale NV12/NV21 uses core-owned DMA-BUF imports; no image CPU copy.
  */
 #include <linux/dma-buf.h>
-#include <linux/atomic.h>
-#include <linux/iosys-map.h>
 #include <linux/firmware.h>
 #include <linux/fcntl.h>
 #include <linux/kernel.h>
@@ -49,14 +47,10 @@ struct camss_a5_m2m {
 	struct mutex video_lock, hw_lock;
 	struct list_head contexts;
 	u32 users;
-	atomic_t exported_buffers;
-	struct vb2_mem_ops memory_ops;
 	int first_error;
 	bool running, fatal, power_pin, removing, mc_registered, media_registered;
 	u64 jobs, completed, direct_completed, cancelled, failed, starts, stops;
 };
-
-#include "camss-icp-a5-m2m-export.h"
 
 static struct ipe_context *file_context(struct file *file)
 {
@@ -395,7 +389,7 @@ static int queue_init(void *private, struct vb2_queue *src,
 		q->drv_priv = ctx;
 		q->buf_struct_size = sizeof(struct v4l2_m2m_buffer);
 		q->ops = &queue_ops;
-		q->mem_ops = &ctx->dev->memory_ops;
+		q->mem_ops = &vb2_dma_sg_memops;
 		q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 		q->lock = &ctx->dev->video_lock;
 		q->dev = ctx->dev->a5->dev;
@@ -623,9 +617,6 @@ struct camss_a5_m2m *camss_a5_m2m_register(struct camss_a5 *a5,
 	mutex_init(&dev->video_lock);
 	mutex_init(&dev->hw_lock);
 	INIT_LIST_HEAD(&dev->contexts);
-	atomic_set(&dev->exported_buffers, 0);
-	dev->memory_ops = vb2_dma_sg_memops;
-	dev->memory_ops.get_dmabuf = owned_export_buffer;
 	ret = v4l2_device_register(a5->dev, &dev->v4l2);
 	if (ret)
 		goto free;
@@ -712,8 +703,7 @@ int camss_a5_m2m_unregister(struct camss_a5_m2m *dev)
 	if (ret)
 		return ret;
 	mutex_lock(&dev->video_lock);
-	if (dev->users || atomic_read(&dev->exported_buffers) ||
-	    dev->power_pin || !list_empty(&dev->contexts)) {
+	if (dev->users || dev->power_pin || !list_empty(&dev->contexts)) {
 		mutex_unlock(&dev->video_lock);
 		return -EBUSY;
 	}
@@ -743,12 +733,11 @@ ssize_t camss_a5_m2m_status(struct camss_a5_m2m *dev, char *buffer, size_t size)
 	ret = scnprintf(buffer, size,
 		"{\"registered\":true,\"users\":%u,\"running\":%s,\"fatal\":%s,"
 		"\"pinned\":%s,\"orphans\":%u,\"jobs\":%llu,\"completed\":%llu,"
-		"\"exported_buffers\":%d,\"first_error\":%d,\"direct_completed\":%llu,\"cancelled\":%llu,\"failed\":%llu,\"starts\":%llu,\"stops\":%llu}\n",
+		"\"first_error\":%d,\"direct_completed\":%llu,\"cancelled\":%llu,\"failed\":%llu,\"starts\":%llu,\"stops\":%llu}\n",
 		dev->users, dev->running ? "true" : "false", dev->fatal ? "true" : "false",
 		dev->power_pin ? "true" : "false", orphans,
 		(unsigned long long)dev->jobs, (unsigned long long)dev->completed,
-		atomic_read(&dev->exported_buffers), dev->first_error,
-		(unsigned long long)dev->direct_completed,
+		dev->first_error, (unsigned long long)dev->direct_completed,
 		(unsigned long long)dev->cancelled, (unsigned long long)dev->failed,
 		(unsigned long long)dev->starts,
 		(unsigned long long)dev->stops);
