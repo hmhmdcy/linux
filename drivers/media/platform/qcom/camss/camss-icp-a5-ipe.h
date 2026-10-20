@@ -77,6 +77,16 @@ int camss_a5_ipe_run_colour_chain_status(struct camss_a5 *a5,
 				       const struct camss_a5_ipe_job *job,
 				       const struct camss_a5_ipe_colour *colour,
 				       enum camss_a5_ipe_result *result);
+/* LUT input is copied into temporary CPU memory, validated before coherent
+ * allocation, encoded in the retained request, then freed on every exit.
+ * NULL Gamma retains the existing colour/bypass interface behaviour.
+ */
+int camss_a5_ipe_run_gamma_status(struct camss_a5 *a5,
+				struct camss_a5_session *session,
+				const struct camss_a5_ipe_job *job,
+				const struct camss_a5_ipe_colour *colour,
+				const struct camss_a5_ipe_gamma *gamma,
+				enum camss_a5_ipe_result *result);
 int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 		     const struct camss_a5_ipe_job *job);
 

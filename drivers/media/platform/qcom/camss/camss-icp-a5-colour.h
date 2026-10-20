@@ -74,4 +74,26 @@ int camss_a5_ipe_colour_check(const struct camss_a5_ipe_colour *colour);
 int camss_a5_ipe_encode_colour_iq(void *destination, u32 bytes, u32 iq_iova,
 				const struct camss_a5_ipe_colour *colour);
 
+/* Target LUT selector order is G, B, R. Values are quantized Gamma15
+ * base10 and signed delta10, not arbitrary CDM words or device addresses.
+ */
+struct camss_a5_ipe_gamma {
+	u16 base[3][256];
+	s16 delta[3][256];
+};
+
+#define CAMSS_A5_IPE_PROGRAM_GENERIC 20U
+#define CAMSS_A5_IPE_PROGRAM_GAMMA 12U
+#define CAMSS_A5_IPE_GAMMA_CST_PACKET_OFFSET 2752U
+#define CAMSS_A5_IPE_GAMMA_CC_PACKET_OFFSET 2808U
+#define CAMSS_A5_IPE_GAMMA_CV_PACKET_OFFSET 2852U
+#define CAMSS_A5_IPE_GAMMA_DMI_OFFSET 2896U
+#define CAMSS_A5_IPE_GAMMA_LUT_OFFSET 2944U
+#define CAMSS_A5_IPE_GAMMA_IQ_BYTES 6016U
+
+int camss_a5_ipe_gamma_check(const struct camss_a5_ipe_gamma *gamma);
+int camss_a5_ipe_encode_gamma_iq(void *destination, u32 bytes, u32 iq_iova,
+			       const struct camss_a5_ipe_colour *colour,
+			       const struct camss_a5_ipe_gamma *gamma);
+
 #endif

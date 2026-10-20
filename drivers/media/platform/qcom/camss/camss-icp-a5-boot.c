@@ -1345,13 +1345,16 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 			     const struct camss_a5_ipe_job *job,
 			     const struct camss_a5_ipe_cc *cc,
 			     const struct camss_a5_ipe_colour *chain,
+			     const struct camss_a5_ipe_gamma *gamma,
 			     enum camss_a5_ipe_result *result)
 {
 	struct camss_a5_ipe_frame frame = {};
 	struct camss_a5_ipe_cc colour;
 	struct camss_a5_ipe_colour configuration;
+	struct camss_a5_ipe_gamma *gamma_copy = NULL;
 	u8 colour_command[CAMSS_A5_IPE_CC_COMMAND_BYTES];
-	u32 iq_bytes = chain ? CAMSS_A5_IPE_COLOUR_IQ_BYTES :
+	u32 iq_bytes = gamma ? CAMSS_A5_IPE_GAMMA_IQ_BYTES :
+		chain ? CAMSS_A5_IPE_COLOUR_IQ_BYTES :
 		cc ? CAMSS_A5_IPE_CC_IQ_BYTES : CAMSS_A5_IPE_IQ_BYTES;
 	u8 packet[40] = {};
 	u64 input_bytes, output_bytes, parcel;
@@ -1378,13 +1381,23 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 	}
 	/* Only a configured, coherent engine may reject a job locally. */
 	local_ready = true;
-	if (cc && chain) {
+	if (cc && (chain || gamma)) {
 		ret = -EINVAL;
 		goto done;
 	}
 	if (chain) {
 		configuration = *chain;
 		ret = camss_a5_ipe_colour_check(&configuration);
+		if (ret)
+			goto done;
+	}
+	if (gamma) {
+		gamma_copy = kmemdup(gamma, sizeof(*gamma), GFP_KERNEL);
+		if (!gamma_copy) {
+			ret = -ENOMEM;
+			goto done;
+		}
+		ret = camss_a5_ipe_gamma_check(gamma_copy);
 		if (ret)
 			goto done;
 	}
@@ -1452,7 +1465,11 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 						 job->max_cores, &stripe_bytes);
 	if (ret)
 		goto release;
-	if (chain)
+	if (gamma)
+		ret = camss_a5_ipe_encode_gamma_iq(a5->request.cpu + iq_offset, iq_bytes,
+						 REQUEST_IOVA + iq_offset,
+						 chain ? &configuration : NULL, gamma_copy);
+	else if (chain)
 		ret = camss_a5_ipe_encode_colour_iq(a5->request.cpu + iq_offset, iq_bytes,
 						  REQUEST_IOVA + iq_offset, &configuration);
 	else if (cc)
@@ -1482,7 +1499,7 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 					 &session->io, &frame);
 	if (ret)
 		goto release;
-	if (chain) {
+	if (gamma || chain) {
 		put_unaligned_le32(REQUEST_IOVA + iq_offset + CAMSS_A5_IPE_COLOUR_ARRAY_OFFSET,
 				   a5->request.cpu + 40);
 		put_unaligned_le32(CAMSS_A5_IPE_COLOUR_PRE_OFFSET, a5->request.cpu + 44);
@@ -1554,6 +1571,7 @@ done:
 			 transfer_released(a5))
 			*result = CAMSS_A5_IPE_REJECTED;
 	}
+	kfree(gamma_copy);
 	mutex_unlock(&a5->lock);
 	return ret;
 }
@@ -1561,7 +1579,7 @@ int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *sessio
 			  const struct camss_a5_ipe_job *job,
 			  enum camss_a5_ipe_result *result)
 {
-	return run_colour_status(a5, session, job, NULL, NULL, result);
+	return run_colour_status(a5, session, job, NULL, NULL, NULL, result);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run_status);
 
@@ -1571,7 +1589,7 @@ int camss_a5_ipe_run_colour_status(struct camss_a5 *a5,
 				 const struct camss_a5_ipe_cc *cc,
 				 enum camss_a5_ipe_result *result)
 {
-	return run_colour_status(a5, session, job, cc, NULL, result);
+	return run_colour_status(a5, session, job, cc, NULL, NULL, result);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run_colour_status);
 
@@ -1581,9 +1599,20 @@ int camss_a5_ipe_run_colour_chain_status(struct camss_a5 *a5,
 				       const struct camss_a5_ipe_colour *colour,
 				       enum camss_a5_ipe_result *result)
 {
-	return run_colour_status(a5, session, job, NULL, colour, result);
+	return run_colour_status(a5, session, job, NULL, colour, NULL, result);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run_colour_chain_status);
+
+int camss_a5_ipe_run_gamma_status(struct camss_a5 *a5,
+				struct camss_a5_session *session,
+				const struct camss_a5_ipe_job *job,
+				const struct camss_a5_ipe_colour *colour,
+				const struct camss_a5_ipe_gamma *gamma,
+				enum camss_a5_ipe_result *result)
+{
+	return run_colour_status(a5, session, job, NULL, colour, gamma, result);
+}
+EXPORT_SYMBOL_GPL(camss_a5_ipe_run_gamma_status);
 
 /* Preserve existing in-kernel callers and their conservative errno contract. */
 int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
