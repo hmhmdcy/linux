@@ -55,5 +55,5 @@ CFLAGS_camss-icp-a5-memory-test.o += -I$(obj)
 qcom-camss-icp-a5-core-y += camss-icp-a5-resources.o
 obj-$(CONFIG_VIDEO_QCOM_CAMSS_ICP_A5_POWER_TEST) += camss-icp-a5-power-test.o
 
-qcom-camss-icp-a5-core-y += camss-icp-a5-boot.o
+qcom-camss-icp-a5-core-y += camss-icp-a5-boot.o camss-icp-a5-ipe.o
 obj-$(CONFIG_VIDEO_QCOM_CAMSS_ICP_A5_BOOT_TEST) += camss-icp-a5-boot-test.o
