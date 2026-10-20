@@ -273,7 +273,7 @@ int camss_a5_ipe_encode_gamma_iq(void *destination, u32 bytes, u32 iq_iova,
 		u8 *command = output + CAMSS_A5_IPE_GAMMA_DMI_OFFSET + bank * 12;
 		u8 *table = output + CAMSS_A5_IPE_GAMMA_LUT_OFFSET + bank * 1024;
 
-		put_unaligned_le32(0x0a0003ff, command);
+		put_unaligned_le32(0x010003ff, command);
 		put_unaligned_le32(iq_iova + CAMSS_A5_IPE_GAMMA_LUT_OFFSET + bank * 1024,
 				   command + 4);
 		put_unaligned_le32(0x6008 | ((bank + 1) << 24), command + 8);
