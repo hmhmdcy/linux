@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Temporary bootstrap diagnostic. No image sessions or sensor changes. */
+/* Temporary A5/IPE session diagnostic. No image frames or sensor changes. */
 #include <linux/device/bus.h>
 #include <linux/dma-mapping.h>
 #include <linux/elf.h>
@@ -19,6 +19,7 @@
 
 static DEFINE_MUTEX(test_lock);
 static struct camss_a5 *device_a5;
+static struct camss_a5_session session_rt, session_non_rt;
 static char result[2048] = "{\"terminal\":false}";
 static char sfr[512];
 module_param_string(result, result, sizeof(result), 0444);
@@ -150,7 +151,7 @@ static void update_result(void)
 		  "\"cpu_enabled\":%s,\"irq_enabled\":%s,\"power_held\":%s,\"backing_owned\":%s,"
 		  "\"mapped_bytes\":%u,\"remaining_groups\":%u,\"remaining_domains\":%u,"
 		  "\"interrupts\":%u,\"messages\":%u,\"debug_packets\":%u,\"watchdogs\":%u,\"protocol_errors\":%u,"
-		  "\"last_type\":%u,\"queue_state\":[%u,%u,%u,%u,%u,%u],\"image_sessions\":0}",
+		  "\"last_type\":%u,\"queue_state\":[%u,%u,%u,%u,%u,%u],\"image_sessions\":%u,\"session_creates\":%u,\"session_destroys\":%u,\"session_peak\":%u,\"session_uncertain\":%s,\"image_frames\":0}",
 		  finished ? "true" : "false", phase, test_error, a5->cleanup_error, a5->pc_error,
 		  a5->cpu_release_attempted ? "true" : "false", a5->init_response, a5->fw_version,
 		  a5->response_before, a5->init_bytes,
@@ -162,7 +163,9 @@ static void update_result(void)
 		  a5->resources.enabled_groups, a5->resources.held_domains,
 		  a5->interrupts, a5->messages, a5->debug_packets, a5->watchdogs, a5->protocol_errors,
 		  a5->last_type, a5->queue_state[0], a5->queue_state[1], a5->queue_state[2],
-		  a5->queue_state[3], a5->queue_state[4], a5->queue_state[5]);
+		  a5->queue_state[3], a5->queue_state[4], a5->queue_state[5],
+		  a5->session_count, a5->session_creates, a5->session_destroys, a5->session_peak,
+		  a5->session_uncertain ? "true" : "false");
 }
 
 static int cleanup(void)
@@ -378,6 +381,22 @@ static void run_locked(struct device *dev)
 		goto done;
 	phase = "ping";
 	ret = camss_a5_ping(a5, 0x353536706d636173ULL);
+	if (ret)
+		goto done;
+	phase = "create-ipe-rt";
+	ret = camss_a5_ipe_create(a5, &session_rt, CAMSS_A5_IPE_RT);
+	if (ret)
+		goto done;
+	phase = "create-ipe-non-rt";
+	ret = camss_a5_ipe_create(a5, &session_non_rt, CAMSS_A5_IPE_NON_RT);
+	if (ret)
+		goto done;
+	phase = "destroy-ipe-non-rt";
+	ret = camss_a5_ipe_destroy(a5, &session_non_rt);
+	if (ret)
+		goto done;
+	phase = "destroy-ipe-rt";
+	ret = camss_a5_ipe_destroy(a5, &session_rt);
 done:
 	if (ret && hold_start_failure && a5->cpu_release_attempted &&
 	    !a5->cleanup_error && !a5->cpu_enabled && !a5->irq_enabled &&

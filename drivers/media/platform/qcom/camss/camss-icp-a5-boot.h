@@ -4,10 +4,29 @@
 
 #include <linux/completion.h>
 #include <linux/hrtimer.h>
+#include <linux/list.h>
 #include <linux/reset.h>
 #include <linux/spinlock.h>
 #include "camss-icp-a5.h"
 #include "camss-icp-a5-resources.h"
+
+struct camss_a5;
+
+enum camss_a5_ipe_type {
+	CAMSS_A5_IPE_RT = 2,
+	CAMSS_A5_IPE_NON_RT = 3,
+};
+
+/* Zero-initialize before first use. Keep this object alive until destroy or
+ * successful stop; do not mutate its fields or use one object with two owners.
+ * Stop destroys live known sessions, or invalidates them after forced reset.
+ * No image buffers or frame commands are submitted by this interface yet.
+ */
+struct camss_a5_session {
+	struct list_head node;
+	struct camss_a5 *a5;
+	u32 handle, type;
+};
 
 struct camss_a5 {
 	struct device *dev;
@@ -30,6 +49,11 @@ struct camss_a5 {
 	u32 queue_state[6];
 	char sfr[512];
 	u64 ping_cookie;
+	struct list_head sessions;
+	u64 session_sequence, session_cookie, session_cookie2;
+	u32 session_opcode, session_reply_handle;
+	u32 session_count, session_creates, session_destroys, session_peak;
+	bool command_queued, session_reply, session_uncertain;
 	bool power_held, irq_enabled, cpu_enabled, initialized;
 	bool init_done, ping_done, pc_done, reset_asserted;
 	bool cpu_release_attempted;
@@ -55,6 +79,9 @@ int camss_a5_runtime_suspend(struct camss_a5 *a5);
 int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware);
 int camss_a5_ping(struct camss_a5 *a5, u64 cookie);
 int camss_a5_stop(struct camss_a5 *a5);
+int camss_a5_ipe_create(struct camss_a5 *a5, struct camss_a5_session *session,
+			 u32 handle_type);
+int camss_a5_ipe_destroy(struct camss_a5 *a5, struct camss_a5_session *session);
 bool camss_a5_backing_owned(const struct camss_a5 *a5);
 
 #endif
