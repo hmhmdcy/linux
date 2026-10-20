@@ -118,6 +118,7 @@ static int boot_test_probe(struct platform_device *pdev)
 	const struct firmware *firmware;
 	struct camss_a5 *a5;
 	struct iommu_group *group;
+	struct device_node *memory;
 	int ret, stop;
 
 	a5 = devm_kzalloc(dev, sizeof(*a5), GFP_KERNEL);
@@ -137,6 +138,19 @@ static int boot_test_probe(struct platform_device *pdev)
 		mutex_unlock(&test_lock);
 		return test_error;
 	}
+	/* An offline fdtoverlay merge does not prove live phandle resolution. */
+	phase = "firmware-reference";
+	memory = of_parse_phandle(dev->of_node, "memory-region", 0);
+	if (!memory) {
+		test_error = -ENXIO;
+		finished = true;
+		update_result();
+		mutex_unlock(&test_lock);
+		return dev_err_probe(dev, test_error, "Firmware memory phandle is unresolved\n");
+	}
+	dev_info(dev, "Firmware memory resolves to %pOF, no-map=%d\n",
+		 memory, of_property_present(memory, "no-map"));
+	of_node_put(memory);
 	phase = "resources";
 	ret = camss_a5_init(pdev, a5);
 	if (ret) {
