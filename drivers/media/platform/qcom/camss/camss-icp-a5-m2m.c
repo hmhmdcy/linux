@@ -198,6 +198,7 @@ static void device_work(struct work_struct *work)
 		.bl_bytes = 512 * 1024, .max_cores = 2,
 		.target_time_ns = 100000000,
 	};
+	enum camss_a5_ipe_result result = CAMSS_A5_IPE_RESET_REQUIRED;
 	int ret = -ECANCELED;
 
 	if (!src || !dst) {
@@ -242,8 +243,9 @@ static void device_work(struct work_struct *work)
 	if (ret)
 		goto hw_fail;
 	job.request_id = ctx->sequence + 1;
-	ret = camss_a5_ipe_run(dev->a5, &ctx->session, &job);
-	if (!ret)
+	ret = camss_a5_ipe_run_status(dev->a5, &ctx->session, &job, &result);
+	/* A proven local rejection errors this queue, not the shared engine. */
+	if (!ret || result == CAMSS_A5_IPE_REJECTED)
 		goto finish;
 hw_fail:
 	dev->fatal = true;

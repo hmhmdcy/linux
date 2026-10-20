@@ -1292,34 +1292,52 @@ static int transfer_alloc(struct camss_a5 *a5,
 	return ret ?: camss_a5_fw_memory_map(memory);
 }
 
-int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
-		     const struct camss_a5_ipe_job *job)
+static bool transfer_released(struct camss_a5 *a5)
+{
+	return !a5->session_uncertain && !a5->ipe_dma_pending &&
+	       !a5->config_fw_mapped && !a5->request_fw_mapped &&
+	       !a5->request_owner && !a5->watchdogs && !a5->protocol_errors &&
+	       !a5->request.cpu && !a5->request.mapped &&
+	       !a5->image_input.cpu && !a5->image_input.mapped &&
+	       !a5->image_output.cpu && !a5->image_output.mapped &&
+	       !a5->dma_input.buffer && !a5->dma_output.buffer;
+}
+
+int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *session,
+			  const struct camss_a5_ipe_job *job,
+			  enum camss_a5_ipe_result *result)
 {
 	struct camss_a5_ipe_frame frame = {};
 	u8 packet[40] = {};
 	u64 input_bytes, output_bytes, parcel;
 	u32 stripe_bytes, iq_offset, scratch_offset, bl_offset;
-	bool direct;
-	int ret, cleanup;
+	bool direct, local_ready = false, firmware_attempted = false;
+	int ret, cleanup = 0;
+
+	if (result)
+		*result = CAMSS_A5_IPE_RESET_REQUIRED;
 
 	if (!a5 || !session || !job)
 		return -EINVAL;
 	direct = job->input_dma || job->output_dma;
-	if ((direct && (!job->input_dma || !job->output_dma || job->input || job->output)) ||
-	    (!direct && (!job->input || !job->output || job->input_offset || job->output_offset)) ||
-	    !job->bl_bytes || job->bl_bytes < 32 ||
-	    !job->max_cores || job->max_cores > 2 || !job->target_time_ns)
-		return -EINVAL;
 	mutex_lock(&a5->lock);
 	if (session->a5 != a5 || !session->handle || !session->configured ||
-	    !a5->initialized || !a5->cpu_enabled || !a5->engine_dma_capable) {
+	    !a5->initialized || !a5->cpu_enabled || !a5->irq_enabled ||
+	    !a5->engine_dma_capable) {
 		ret = -ENODEV;
 		goto done;
 	}
-	if (a5->session_uncertain || a5->ipe_dma_pending ||
-	    a5->request.cpu || a5->image_input.cpu || a5->image_output.cpu ||
-	    a5->dma_input.buffer || a5->dma_output.buffer) {
+	if (!transfer_released(a5)) {
 		ret = -EBUSY;
+		goto done;
+	}
+	/* Only a configured, coherent engine may reject a job locally. */
+	local_ready = true;
+	if ((direct && (!job->input_dma || !job->output_dma || job->input || job->output)) ||
+	    (!direct && (!job->input || !job->output || job->input_offset || job->output_offset)) ||
+	    !job->bl_bytes || job->bl_bytes < 32 ||
+	    !job->max_cores || job->max_cores > 2 || !job->target_time_ns) {
+		ret = -EINVAL;
 		goto done;
 	}
 	if (!nv12_layout_valid(&session->io.input) ||
@@ -1397,6 +1415,8 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 	if (ret)
 		goto release;
 	dma_wmb();
+	/* Any attempted firmware MAP crosses the conservative reset boundary. */
+	firmware_attempted = true;
 	ret = transfer_region_locked(a5, session, true);
 	if (ret)
 		goto release;
@@ -1449,7 +1469,22 @@ release:
 			ret = cleanup;
 	}
 done:
+	if (result) {
+		if (!ret)
+			*result = CAMSS_A5_IPE_COMPLETE;
+		else if (local_ready && !firmware_attempted && !cleanup &&
+			 transfer_released(a5))
+			*result = CAMSS_A5_IPE_REJECTED;
+	}
 	mutex_unlock(&a5->lock);
 	return ret;
+}
+EXPORT_SYMBOL_GPL(camss_a5_ipe_run_status);
+
+/* Preserve existing in-kernel callers and their conservative errno contract. */
+int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
+		     const struct camss_a5_ipe_job *job)
+{
+	return camss_a5_ipe_run_status(a5, session, job, NULL);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run);

@@ -46,6 +46,19 @@ struct camss_a5_ipe_job {
 	u32 input_bytes, output_bytes;
 	u32 bl_bytes, request_id, max_cores, target_time_ns;
 };
+/* A negative errno alone cannot distinguish a local input rejection from
+ * an uncertain firmware command. RESET_REQUIRED is the fail-closed default.
+ * REJECTED proves no transfer MAP was attempted and all transient backing
+ * was released; it never permits retiring unknown hardware DMA ownership.
+ */
+enum camss_a5_ipe_result {
+	CAMSS_A5_IPE_RESET_REQUIRED,
+	CAMSS_A5_IPE_REJECTED,
+	CAMSS_A5_IPE_COMPLETE,
+};
+int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *session,
+			  const struct camss_a5_ipe_job *job,
+			  enum camss_a5_ipe_result *result);
 int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 		     const struct camss_a5_ipe_job *job);
 
