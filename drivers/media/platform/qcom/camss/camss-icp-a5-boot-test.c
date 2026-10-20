@@ -20,6 +20,12 @@
 static DEFINE_MUTEX(test_lock);
 static struct camss_a5 *device_a5;
 static struct camss_a5_session session_rt, session_non_rt;
+static u32 scratch_observed[2];
+static const struct camss_a5_ipe_io test_io = {
+	.input = { .width = 640, .height = 480, .stride = 640, .slice_height = 480 },
+	.output = { .width = 640, .height = 480, .stride = 640, .slice_height = 480 },
+	.output_port = 8,
+};
 static char result[2048] = "{\"terminal\":false}";
 static char sfr[512];
 module_param_string(result, result, sizeof(result), 0444);
@@ -151,7 +157,7 @@ static void update_result(void)
 		  "\"cpu_enabled\":%s,\"irq_enabled\":%s,\"power_held\":%s,\"backing_owned\":%s,"
 		  "\"mapped_bytes\":%u,\"remaining_groups\":%u,\"remaining_domains\":%u,"
 		  "\"interrupts\":%u,\"messages\":%u,\"debug_packets\":%u,\"watchdogs\":%u,\"protocol_errors\":%u,"
-		  "\"last_type\":%u,\"queue_state\":[%u,%u,%u,%u,%u,%u],\"image_sessions\":%u,\"session_creates\":%u,\"session_destroys\":%u,\"session_peak\":%u,\"session_uncertain\":%s,\"image_frames\":0}",
+		  "\"last_type\":%u,\"queue_state\":[%u,%u,%u,%u,%u,%u],\"image_sessions\":%u,\"session_creates\":%u,\"session_destroys\":%u,\"session_peak\":%u,\"session_uncertain\":%s,\"io_configs\":%u,\"config_maps\":%u,\"config_unmaps\":%u,\"config_fw_mapped\":%s,\"scratch_bytes\":[%u,%u],\"image_frames\":0}",
 		  finished ? "true" : "false", phase, test_error, a5->cleanup_error, a5->pc_error,
 		  a5->cpu_release_attempted ? "true" : "false", a5->init_response, a5->fw_version,
 		  a5->response_before, a5->init_bytes,
@@ -159,13 +165,14 @@ static void update_result(void)
 		  a5->pc_done ? "true" : "false", a5->reset_asserted ? "true" : "false",
 		  a5->cpu_enabled ? "true" : "false", a5->irq_enabled ? "true" : "false",
 		  a5->power_held ? "true" : "false", camss_a5_backing_owned(a5) ? "true" : "false",
-		  a5->firmware.mapped + a5->shared.mapped + a5->heap.mapped,
+		  a5->firmware.mapped + a5->shared.mapped + a5->heap.mapped + a5->config.mapped,
 		  a5->resources.enabled_groups, a5->resources.held_domains,
 		  a5->interrupts, a5->messages, a5->debug_packets, a5->watchdogs, a5->protocol_errors,
 		  a5->last_type, a5->queue_state[0], a5->queue_state[1], a5->queue_state[2],
 		  a5->queue_state[3], a5->queue_state[4], a5->queue_state[5],
 		  a5->session_count, a5->session_creates, a5->session_destroys, a5->session_peak,
-		  a5->session_uncertain ? "true" : "false");
+		  a5->session_uncertain ? "true" : "false", a5->io_configs, a5->config_maps, a5->config_unmaps,
+		  a5->config_fw_mapped ? "true" : "false", scratch_observed[0], scratch_observed[1]);
 }
 
 static int cleanup(void)
@@ -387,10 +394,20 @@ static void run_locked(struct device *dev)
 	ret = camss_a5_ipe_create(a5, &session_rt, CAMSS_A5_IPE_RT);
 	if (ret)
 		goto done;
+	phase = "configure-ipe-rt";
+	ret = camss_a5_ipe_configure_nv12(a5, &session_rt, &test_io);
+	if (ret)
+		goto done;
+	scratch_observed[0] = session_rt.scratch_bytes;
 	phase = "create-ipe-non-rt";
 	ret = camss_a5_ipe_create(a5, &session_non_rt, CAMSS_A5_IPE_NON_RT);
 	if (ret)
 		goto done;
+	phase = "configure-ipe-non-rt";
+	ret = camss_a5_ipe_configure_nv12(a5, &session_non_rt, &test_io);
+	if (ret)
+		goto done;
+	scratch_observed[1] = session_non_rt.scratch_bytes;
 	phase = "destroy-ipe-non-rt";
 	ret = camss_a5_ipe_destroy(a5, &session_non_rt);
 	if (ret)

@@ -68,6 +68,14 @@
 #define IPE_ASYNC_DIRECT 0x101000aU
 #define IPE_ASYNC_DIRECT_ACK 0x102000aU
 #define IPE_DESTROY 8U
+#define IPE_CONFIG_IO 5U
+#define IPE_MEM_MAP 14U
+#define IPE_MEM_UNMAP 15U
+#define IPE_ASYNC_INDIRECT 0x101000eU
+#define IPE_ASYNC_INDIRECT_ACK 0x102000eU
+#define IPE_IO_CONFIG_BYTES 1216U
+#define CONFIG_IOVA (SHARED_IOVA + 0x20000U)
+#define CONFIG_BYTES 4096U
 
 static enum hrtimer_restart boot_timeout(struct hrtimer *timer)
 {
@@ -155,10 +163,19 @@ static void process_message(struct camss_a5 *a5, size_t bytes)
 		a5->session_reply = true;
 		break;
 	case IPE_ASYNC_DIRECT_ACK:
-		/* Actual A5 firmware emits 32-byte header plus 16-byte payload,
-		 * not sizeof(the downstream packed 12-byte payload declaration).
+	case IPE_ASYNC_INDIRECT_ACK:
+		/* Sizes come from the actual A5 dispatch/callbacks, which differ
+		 * from the old downstream packed payload declarations.
 		 */
-		if (bytes != 48)
+		if (a5->session_opcode != IPE_DESTROY &&
+		    a5->session_opcode != IPE_MEM_MAP &&
+		    a5->session_opcode != IPE_MEM_UNMAP &&
+		    a5->session_opcode != IPE_CONFIG_IO)
+			goto malformed;
+		if ((a5->session_opcode == IPE_DESTROY && bytes != 48) ||
+		    ((a5->session_opcode == IPE_MEM_MAP ||
+		      a5->session_opcode == IPE_MEM_UNMAP) && bytes != 44) ||
+		    (a5->session_opcode == IPE_CONFIG_IO && bytes != 56))
 			goto malformed;
 		if (get_unaligned_le64(a5->message + 12) != a5->session_cookie ||
 		    get_unaligned_le64(a5->message + 20) != a5->session_cookie2)
@@ -168,6 +185,8 @@ static void process_message(struct camss_a5 *a5, size_t bytes)
 		error = get_unaligned_le32(a5->message + 28);
 		if (!error)
 			error = get_unaligned_le32(a5->message + 32);
+		if (!error && a5->session_opcode == IPE_CONFIG_IO)
+			a5->session_scratch_bytes = get_unaligned_le32(a5->message + 36);
 		a5->session_reply = true;
 		break;
 	case PING_ACK:
@@ -265,6 +284,7 @@ static int session_token(struct camss_a5 *a5)
 	a5->session_cookie2 = a5->session_cookie ^ 0x3764955045413541ULL;
 	a5->session_reply = false;
 	a5->session_reply_handle = 0;
+	a5->session_scratch_bytes = 0;
 	return 0;
 }
 
@@ -276,6 +296,170 @@ static void session_command_failed(struct camss_a5 *a5, int ret)
 	if (a5->command_queued && (ret != -EREMOTEIO || !a5->session_reply))
 		a5->session_uncertain = true;
 }
+
+/* A5/Titan17x IO wire layout verified against the retained OEM HAL and ELF.
+ * No tuning tables or image buffers are embedded in this serializer.
+ */
+static bool nv12_layout_valid(const struct camss_a5_nv12_layout *layout)
+{
+	return layout->width && layout->height &&
+	       !(layout->width & 1) && !(layout->height & 1) &&
+	       layout->stride >= layout->width && !(layout->stride & 1) &&
+	       layout->slice_height >= layout->height &&
+	       !(layout->slice_height & 1) &&
+	       (u64)layout->stride * layout->slice_height <= (u64)U32_MAX * 2 / 3;
+}
+
+static void encode_nv12_image(void *destination,
+			      const struct camss_a5_nv12_layout *layout)
+{
+	put_unaligned_le32(20, destination); /* IMAGE_FORMAT_LINEAR_NV12 */
+	put_unaligned_le32(layout->width, destination + 4);
+	put_unaligned_le32(layout->height, destination + 8);
+	put_unaligned_le32(layout->uv_swap, destination + 24);
+	put_unaligned_le32(layout->stride, destination + 52);
+	put_unaligned_le32(layout->slice_height, destination + 56);
+	put_unaligned_le32(layout->stride, destination + 60);
+	put_unaligned_le32(layout->slice_height / 2, destination + 64);
+}
+
+static int encode_ipe_io(void *destination, u32 bytes,
+			 const struct camss_a5_ipe_io *io)
+{
+	if (!destination || !io || bytes < IPE_IO_CONFIG_BYTES ||
+	    !nv12_layout_valid(&io->input) || !nv12_layout_valid(&io->output) ||
+	    (io->output_port != 8 && io->output_port != 9))
+		return -EINVAL;
+	memset(destination, 0, IPE_IO_CONFIG_BYTES);
+	encode_nv12_image(destination, &io->input);
+	encode_nv12_image(destination + io->output_port * 84, &io->output);
+	/* One frame per batch, ordinary non-secure topology/mux defaults.
+	 * The aligned userArg at byte1208 remains zero.
+	 */
+	put_unaligned_le32(1, destination + 1192);
+	return 0;
+}
+
+static int config_region_locked(struct camss_a5 *a5,
+				struct camss_a5_session *session, bool map)
+{
+	u8 packet[56] = {};
+	int ret;
+
+	if (session->a5 != a5 || !a5->initialized || a5->session_uncertain)
+		return -EIO;
+	if ((map && a5->config_fw_mapped) ||
+	    (!map && (!a5->config_fw_mapped || a5->config_owner != session)))
+		return -EBUSY;
+	ret = session_token(a5);
+	if (ret)
+		return ret;
+	a5->session_opcode = map ? IPE_MEM_MAP : IPE_MEM_UNMAP;
+	put_unaligned_le32(sizeof(packet), packet);
+	put_unaligned_le32(IPE_ASYNC_DIRECT, packet + 4);
+	put_unaligned_le32(a5->session_opcode, packet + 8);
+	put_unaligned_le64(a5->session_cookie, packet + 12);
+	put_unaligned_le64(a5->session_cookie2, packet + 20);
+	put_unaligned_le32(1, packet + 28);
+	put_unaligned_le32(session->handle, packet + 32);
+	put_unaligned_le64(a5->session_cookie, packet + 36);
+	put_unaligned_le32(1, packet + 44);
+	put_unaligned_le32(a5->config.iova, packet + 48);
+	put_unaligned_le32(a5->config.bytes, packet + 52);
+	ret = send_packet(a5, packet, sizeof(packet), IPE_ASYNC_DIRECT_ACK);
+	if (map && a5->command_queued) {
+		/* A failed reply can follow a partially applied firmware mapping.
+		 * Keep its backing until an acknowledged unmap or CPU quiescence.
+		 */
+		a5->config_fw_mapped = true;
+		a5->config_owner = session;
+	}
+	if (ret) {
+		session_command_failed(a5, ret);
+		if (map && a5->command_queued)
+			a5->session_uncertain = true;
+		return ret;
+	}
+	if (map) {
+		a5->config_maps++;
+	} else {
+		a5->config_fw_mapped = false;
+		a5->config_owner = NULL;
+		a5->config_unmaps++;
+	}
+	dev_info(a5->dev, "A5 IPE config region %s acknowledged\n", map ? "map" : "unmap");
+	return 0;
+}
+
+int camss_a5_ipe_configure_nv12(struct camss_a5 *a5,
+			       struct camss_a5_session *session,
+			       const struct camss_a5_ipe_io *io)
+{
+	u8 packet[40] = {};
+	int ret, unmap;
+
+	if (!session || !io)
+		return -EINVAL;
+	mutex_lock(&a5->lock);
+	if (session->a5 != a5 || !session->handle || !a5->initialized ||
+	    !a5->cpu_enabled) {
+		ret = -ENODEV;
+		goto done;
+	}
+	if (a5->session_uncertain || a5->config_fw_mapped) {
+		ret = -EBUSY;
+		goto done;
+	}
+	if (!a5->config.cpu || a5->config.bytes < IPE_IO_CONFIG_BYTES ||
+	    a5->config.mapped != a5->config.bytes) {
+		ret = -EINVAL;
+		goto done;
+	}
+	ret = encode_ipe_io(a5->config.cpu, a5->config.bytes, io);
+	if (ret)
+		goto done;
+	dma_wmb();
+	ret = config_region_locked(a5, session, true);
+	if (ret)
+		goto done;
+	ret = session_token(a5);
+	if (ret)
+		goto unmap;
+	a5->session_opcode = IPE_CONFIG_IO;
+	put_unaligned_le32(sizeof(packet), packet);
+	put_unaligned_le32(IPE_ASYNC_INDIRECT, packet + 4);
+	put_unaligned_le32(IPE_CONFIG_IO, packet + 8);
+	put_unaligned_le64(a5->session_cookie, packet + 12);
+	put_unaligned_le64(a5->session_cookie2, packet + 20);
+	put_unaligned_le32(1, packet + 28);
+	put_unaligned_le32(session->handle, packet + 32);
+	put_unaligned_le32(a5->config.iova, packet + 36);
+	session->configured = false;
+	session->scratch_bytes = 0;
+	ret = send_packet(a5, packet, sizeof(packet), IPE_ASYNC_INDIRECT_ACK);
+	if (ret) {
+		session_command_failed(a5, ret);
+	} else {
+		session->scratch_bytes = a5->session_scratch_bytes;
+		a5->io_configs++;
+		dev_info(a5->dev, "A5 IPE CONFIG_IO acknowledged scratch=%u\n",
+			 session->scratch_bytes);
+	}
+unmap:
+	if (!a5->session_uncertain) {
+		unmap = config_region_locked(a5, session, false);
+		if (!ret)
+			ret = unmap;
+	}
+	if (!ret) {
+		session->io = *io;
+		session->configured = true;
+	}
+done:
+	mutex_unlock(&a5->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(camss_a5_ipe_configure_nv12);
 
 int camss_a5_ipe_create(struct camss_a5 *a5, struct camss_a5_session *session,
 			 u32 handle_type)
@@ -347,6 +531,11 @@ static int ipe_destroy_locked(struct camss_a5 *a5,
 		return -ENODEV;
 	if (a5->session_uncertain)
 		return -EIO;
+	if (a5->config_fw_mapped && a5->config_owner == session) {
+		ret = config_region_locked(a5, session, false);
+		if (ret)
+			return ret;
+	}
 	ret = session_token(a5);
 	if (ret)
 		return ret;
@@ -371,6 +560,8 @@ static int ipe_destroy_locked(struct camss_a5 *a5,
 	session->a5 = NULL;
 	session->handle = 0;
 	session->type = 0;
+	session->configured = false;
+	session->scratch_bytes = 0;
 	a5->session_count--;
 	a5->session_destroys++;
 	dev_info(a5->dev, "A5 IPE destroy acknowledged active=%u\n", a5->session_count);
@@ -399,14 +590,18 @@ static void invalidate_sessions(struct camss_a5 *a5)
 		session->a5 = NULL;
 		session->handle = 0;
 		session->type = 0;
+		session->configured = false;
+		session->scratch_bytes = 0;
 	}
 	a5->session_count = 0;
 	a5->session_uncertain = false;
+	a5->config_fw_mapped = false;
+	a5->config_owner = NULL;
 }
 
 bool camss_a5_backing_owned(const struct camss_a5 *a5)
 {
-	return a5->firmware.cpu || a5->shared.cpu || a5->heap.cpu;
+	return a5->firmware.cpu || a5->shared.cpu || a5->heap.cpu || a5->config.cpu;
 }
 EXPORT_SYMBOL_GPL(camss_a5_backing_owned);
 
@@ -472,7 +667,7 @@ static void publish_start_failure(struct camss_a5 *a5)
 
 static int free_memory(struct camss_a5 *a5)
 {
-	struct camss_a5_fw_memory *memories[] = { &a5->heap, &a5->shared, &a5->firmware };
+	struct camss_a5_fw_memory *memories[] = { &a5->config, &a5->heap, &a5->shared, &a5->firmware };
 	unsigned int i;
 	int ret;
 
@@ -516,6 +711,9 @@ static int prepare_memory(struct camss_a5 *a5, const struct firmware *firmware)
 	ret = camss_a5_iova_memory_alloc(a5->dev, &a5->heap, HEAP_IOVA, HEAP_BYTES);
 	if (ret)
 		return ret;
+	ret = camss_a5_iova_memory_alloc(a5->dev, &a5->config, CONFIG_IOVA, CONFIG_BYTES);
+	if (ret)
+		return ret;
 	a5->table = a5->shared.cpu;
 	for (i = 0; i < CAMSS_A5_QUEUE_COUNT; i++)
 		iovas[i] = SHARED_IOVA + offsets[i];
@@ -535,7 +733,10 @@ static int prepare_memory(struct camss_a5 *a5, const struct firmware *firmware)
 	ret = camss_a5_fw_memory_map(&a5->shared);
 	if (ret)
 		return ret;
-	return camss_a5_fw_memory_map(&a5->heap);
+	ret = camss_a5_fw_memory_map(&a5->heap);
+	if (ret)
+		return ret;
+	return camss_a5_fw_memory_map(&a5->config);
 }
 
 static int quiesce_locked(struct camss_a5 *a5)
@@ -696,6 +897,7 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	a5->cpu_release_attempted = false;
 	a5->boot_expired = false;
 	a5->session_creates = a5->session_destroys = a5->session_peak = 0;
+	a5->io_configs = a5->config_maps = a5->config_unmaps = 0;
 	ret = prepare_memory(a5, firmware);
 	if (ret)
 		goto fail;

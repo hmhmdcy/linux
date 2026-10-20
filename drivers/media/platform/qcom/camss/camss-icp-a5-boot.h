@@ -22,10 +22,23 @@ enum camss_a5_ipe_type {
  * Stop destroys live known sessions, or invalidates them after forced reset.
  * No image buffers or frame commands are submitted by this interface yet.
  */
+struct camss_a5_nv12_layout {
+	u32 width, height, stride, slice_height;
+	bool uv_swap;
+};
+
+struct camss_a5_ipe_io {
+	struct camss_a5_nv12_layout input, output;
+	u32 output_port; /* 8: display, 9: video */
+};
+
 struct camss_a5_session {
 	struct list_head node;
 	struct camss_a5 *a5;
 	u32 handle, type;
+	struct camss_a5_ipe_io io;
+	u32 scratch_bytes;
+	bool configured;
 };
 
 struct camss_a5 {
@@ -33,7 +46,7 @@ struct camss_a5 {
 	struct camss_a5_resources resources;
 	struct reset_control *reset;
 	phys_addr_t firmware_physical;
-	struct camss_a5_fw_memory firmware, shared, heap;
+	struct camss_a5_fw_memory firmware, shared, heap, config;
 	struct camss_a5_ring rings[CAMSS_A5_QUEUE_COUNT];
 	struct camss_a5_qtable *table;
 	struct completion response;
@@ -54,6 +67,9 @@ struct camss_a5 {
 	u32 session_opcode, session_reply_handle;
 	u32 session_count, session_creates, session_destroys, session_peak;
 	bool command_queued, session_reply, session_uncertain;
+	struct camss_a5_session *config_owner;
+	bool config_fw_mapped;
+	u32 session_scratch_bytes, io_configs, config_maps, config_unmaps;
 	bool power_held, irq_enabled, cpu_enabled, initialized;
 	bool init_done, ping_done, pc_done, reset_asserted;
 	bool cpu_release_attempted;
@@ -82,6 +98,10 @@ int camss_a5_stop(struct camss_a5 *a5);
 int camss_a5_ipe_create(struct camss_a5 *a5, struct camss_a5_session *session,
 			 u32 handle_type);
 int camss_a5_ipe_destroy(struct camss_a5 *a5, struct camss_a5_session *session);
+/* Configure linear NV12/NV21 without submitting any image DMA or frame. */
+int camss_a5_ipe_configure_nv12(struct camss_a5 *a5,
+			       struct camss_a5_session *session,
+			       const struct camss_a5_ipe_io *io);
 bool camss_a5_backing_owned(const struct camss_a5 *a5);
 
 #endif
