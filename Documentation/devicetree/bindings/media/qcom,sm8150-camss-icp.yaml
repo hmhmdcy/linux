@@ -98,7 +98,7 @@ properties:
 
   firmware-name:
     $ref: /schemas/types.yaml#/definitions/string
-    minLength: 1
+    pattern: '.+'
 
   '#address-cells':
     const: 2
