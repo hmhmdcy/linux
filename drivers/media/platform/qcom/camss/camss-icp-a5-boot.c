@@ -390,12 +390,15 @@ static int stop_locked(struct camss_a5 *a5)
 	/* Retire all firmware DMA aliases while the supplier is still powered.
 	 * A failed unmap keeps the PM reference and backing for a later retry.
 	 */
+	dev_info(a5->dev, "A5 retiring DMA aliases\n");
 	ret = free_memory(a5);
 	if (ret)
 		return ret;
+	dev_info(a5->dev, "A5 DMA aliases retired\n");
 	if (a5->power_held) {
 		ret = pm_runtime_put_sync_suspend(a5->dev);
 		a5->power_held = false;
+		dev_info(a5->dev, "A5 PM reference released: %d\n", ret);
 		if (ret < 0)
 			return ret;
 	}
