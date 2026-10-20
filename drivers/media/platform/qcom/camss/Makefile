@@ -46,3 +46,8 @@ qcom-camss-objs += \
 		camss-video.o
 
 obj-$(CONFIG_VIDEO_QCOM_CAMSS) += qcom-camss.o
+
+qcom-camss-icp-a5-core-y := camss-icp-a5-core.o camss-icp-a5-hfi.o camss-icp-a5-fw.o camss-icp-a5-memory.o
+obj-$(CONFIG_VIDEO_QCOM_CAMSS_ICP_A5_CORE) += qcom-camss-icp-a5-core.o
+obj-$(CONFIG_VIDEO_QCOM_CAMSS_ICP_A5_MEMORY_TEST) += camss-icp-a5-memory-test.o
+CFLAGS_camss-icp-a5-memory-test.o += -I$(obj)
