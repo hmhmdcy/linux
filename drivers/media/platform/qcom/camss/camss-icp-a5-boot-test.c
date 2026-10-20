@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Temporary bootstrap diagnostic. No image sessions or sensor changes. */
 #include <linux/dma-mapping.h>
+#include <linux/elf.h>
 #include <linux/firmware.h>
 #include <linux/iommu.h>
 #include <linux/module.h>
@@ -9,6 +10,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
+#include <linux/unaligned.h>
 
 #include "camss-icp-a5-boot.h"
 #include "camss-icp-a5-boot-test-blob.h"
@@ -26,6 +28,99 @@ module_param(hold_start_failure, bool, 0444);
 MODULE_PARM_DESC(hold_start_failure, "Keep quiesced failed boot RAM and PM until cleanup");
 static const char *phase = "waiting";
 static unsigned int group_devices;
+
+/* Temporary diagnostic ranges are supplied from the verified ELF profile.
+ * No OEM symbol address is part of the reusable SoC transport API.
+ */
+static unsigned int snapshot_offsets[4], snapshot_words[4];
+static unsigned int snapshot_offset_count, snapshot_word_count;
+static const u8 *snapshot_boot_code;
+module_param_array(snapshot_offsets, uint, &snapshot_offset_count, 0444);
+module_param_array(snapshot_words, uint, &snapshot_word_count, 0444);
+
+static bool snapshot_ranges_valid(u32 bytes)
+{
+	unsigned int i;
+
+	if (!snapshot_offset_count || snapshot_offset_count > ARRAY_SIZE(snapshot_offsets) ||
+	    snapshot_offset_count != snapshot_word_count)
+		return false;
+	for (i = 0; i < snapshot_offset_count; i++) {
+		if (!IS_ALIGNED(snapshot_offsets[i], sizeof(u32)) ||
+		    !snapshot_words[i] || snapshot_words[i] > 96 ||
+		    snapshot_offsets[i] > bytes ||
+		    snapshot_words[i] > (bytes - snapshot_offsets[i]) / sizeof(u32))
+			return false;
+	}
+	return true;
+}
+
+static void failure_snapshot(struct camss_a5 *a5)
+{
+	unsigned int i, j, k, count;
+	u32 words[8], offset;
+	bool match;
+
+	dev_info(a5->dev, "A5 pre-reset snapshot begin ranges=%u\n", snapshot_offset_count);
+	if (!a5->power_held || !a5->firmware.cpu || !snapshot_boot_code ||
+	    a5->firmware.bytes < 4096 || a5->firmware.mapped != a5->firmware.bytes ||
+	    !snapshot_ranges_valid(a5->firmware.bytes)) {
+		dev_info(a5->dev, "A5 pre-reset snapshot unavailable\n");
+		return;
+	}
+	dma_rmb();
+	match = !memcmp(a5->firmware.cpu, snapshot_boot_code, 4096);
+	dev_info(a5->dev, "A5 pre-reset snapshot code-match=%u\n", match);
+	if (!match)
+		return;
+	for (i = 0; i < snapshot_offset_count; i++) {
+		for (j = 0; j < snapshot_words[i]; j += ARRAY_SIZE(words)) {
+			count = min_t(unsigned int, ARRAY_SIZE(words), snapshot_words[i] - j);
+			offset = snapshot_offsets[i] + j * sizeof(u32);
+			memset(words, 0, sizeof(words));
+			for (k = 0; k < count; k++)
+				words[k] = get_unaligned_le32(a5->firmware.cpu + offset + k * sizeof(u32));
+			dev_info(a5->dev, "A5 pre-reset snapshot data offset=%x count=%u values=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+				 offset, count, words[0], words[1], words[2], words[3],
+				 words[4], words[5], words[6], words[7]);
+		}
+	}
+	dev_info(a5->dev, "A5 pre-reset snapshot end\n");
+}
+
+static int configure_snapshot(struct camss_a5 *a5, const struct firmware *firmware)
+{
+	struct camss_a5_fw_layout layout;
+	u32 table;
+	unsigned int i, count;
+	int ret;
+
+	a5->failure_snapshot = NULL;
+	snapshot_boot_code = NULL;
+	if (!snapshot_offset_count && !snapshot_word_count)
+		return 0;
+	ret = camss_a5_fw_inspect(firmware, CAMSS_A5_FW_WINDOW, &layout);
+	if (ret)
+		return ret;
+	if (!snapshot_ranges_valid(layout.span))
+		return -EINVAL;
+	table = get_unaligned_le32(firmware->data + 28);
+	count = get_unaligned_le16(firmware->data + 44);
+	for (i = 0; i < count; i++) {
+		const u8 *header = firmware->data + table + i * sizeof(Elf32_Phdr);
+
+		if (get_unaligned_le32(header) == PT_LOAD &&
+		    !get_unaligned_le32(header + 8) &&
+		    get_unaligned_le32(header + 16) >= 4096 &&
+		    (get_unaligned_le32(header + 24) & PF_X)) {
+			snapshot_boot_code = firmware->data + get_unaligned_le32(header + 4);
+			a5->failure_snapshot = failure_snapshot;
+			return 0;
+		}
+	}
+	return -ENOEXEC;
+}
+
 
 static int group_device(struct device *dev, void *target)
 {
@@ -223,8 +318,14 @@ static int boot_test_probe(struct platform_device *pdev)
 	ret = request_firmware_direct(&firmware, "qcom/sm8150/samurai-icp356.elf", dev);
 	if (ret)
 		goto done;
-	phase = "start";
-	ret = camss_a5_start(a5, firmware);
+	phase = "snapshot-profile";
+	ret = configure_snapshot(a5, firmware);
+	if (!ret) {
+		phase = "start";
+		ret = camss_a5_start(a5, firmware);
+	}
+	a5->failure_snapshot = NULL;
+	snapshot_boot_code = NULL;
 	release_firmware(firmware);
 	if (ret)
 		goto done;

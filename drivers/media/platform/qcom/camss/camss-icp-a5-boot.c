@@ -512,6 +512,11 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	dev_info(a5->dev, "A5 SYS_INIT acknowledged\n");
 	goto unlock;
 fail:
+	/* An optional owner observer runs with RAM/PM still owned, before any
+	 * CPU/reset teardown. It must not re-enter lifecycle operations.
+	 */
+	if (a5->cpu_release_attempted && a5->failure_snapshot)
+		a5->failure_snapshot(a5);
 	publish_start_failure(a5);
 	/* Keep owned RAM, aliases and the PM reference until the owner calls
 	 * stop. A failed boot can then be inspected after CPU/IRQ quiescence,

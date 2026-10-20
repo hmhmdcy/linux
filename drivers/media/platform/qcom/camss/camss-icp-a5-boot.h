@@ -34,6 +34,7 @@ struct camss_a5 {
 	bool init_done, ping_done, pc_done, reset_asserted;
 	bool cpu_release_attempted;
 	bool boot_expired;
+	void (*failure_snapshot)(struct camss_a5 *a5);
 };
 
 /* The owner installs PM callbacks which delegate to runtime_resume/suspend,
@@ -42,6 +43,10 @@ struct camss_a5 {
  * reference. The owner must call stop after either start success or failure.
  * Inspect firmware RAM only after successful quiescence, with CPU/IRQ off,
  * block reset asserted and all mappings/PM ownership still held.
+ * An optional failure_snapshot observer runs under the lifecycle mutex,
+ * before CPU/block reset and release of any backing or PM reference. Keep
+ * the observer and its data valid through start; it must be bounded, avoid
+ * allocation/MMIO and never re-enter lifecycle/command operations.
  * Failed teardown retains mapped backing; do not unbind until cleanup succeeds.
  */
 int camss_a5_init(struct platform_device *pdev, struct camss_a5 *a5);
