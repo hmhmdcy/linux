@@ -60,7 +60,7 @@ module_param(enable_frame, bool, 0400);
 
 static int test_frame(struct device *dev, struct camss_a5 *a5)
 {
-	const struct firmware *stripe = NULL, *iq = NULL;
+	const struct firmware *stripe = NULL;
 	struct camss_a5_ipe_job job = {};
 	u8 *input;
 	unsigned int x, y;
@@ -77,10 +77,7 @@ static int test_frame(struct device *dev, struct camss_a5 *a5)
 		ret = -ENOMEM;
 		goto out;
 	}
-	ret = request_firmware_direct(&stripe, "qcom/sm8150/samurai-ipe381-stripe.bin", dev);
-	if (ret)
-		goto out;
-	ret = request_firmware_direct(&iq, "qcom/sm8150/samurai-ipe381-iq.bin", dev);
+	ret = request_firmware_direct(&stripe, "qcom/sm8150/samurai-ipe382-stripe.bin", dev);
 	if (ret)
 		goto out;
 	for (y = 0; y < 480; y++)
@@ -95,8 +92,6 @@ static int test_frame(struct device *dev, struct camss_a5 *a5)
 	test_input_crc = crc32_le(0, input, TEST_IMAGE_BYTES);
 	job.striping = stripe->data;
 	job.striping_bytes = stripe->size;
-	job.iq = iq->data;
-	job.iq_bytes = iq->size;
 	job.input = input;
 	job.input_bytes = TEST_IMAGE_BYTES;
 	job.output = test_output;
@@ -111,8 +106,6 @@ static int test_frame(struct device *dev, struct camss_a5 *a5)
 		test_output_crc = crc32_le(0, test_output, TEST_IMAGE_BYTES);
 	}
 out:
-	if (iq)
-		release_firmware(iq);
 	if (stripe)
 		release_firmware(stripe);
 	kvfree(input);

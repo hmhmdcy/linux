@@ -1283,16 +1283,11 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 	u32 stripe_bytes, iq_offset, scratch_offset, bl_offset;
 	int ret, cleanup;
 
-	if (!a5 || !session || !job || !job->striping || !job->iq ||
-	    !job->input || !job->output || job->iq_bytes != CAMSS_A5_IPE_IQ_BYTES ||
+	if (!a5 || !session || !job || !job->striping ||
+	    !job->input || !job->output ||
 	    !job->bl_bytes || job->bl_bytes < 32 ||
 	    !job->max_cores || job->max_cores > 2 || !job->target_time_ns)
 		return -EINVAL;
-	/* Bring-up accepts the verified disabled-module IQ fixture only.
-	 * Validated module/CDM generation is a separate next step.
-	 */
-	if (memchr_inv(job->iq, 0, job->iq_bytes))
-		return -EOPNOTSUPP;
 	ret = camss_a5_ipe_striping_bytes(job->striping, job->striping_bytes,
 					 &stripe_bytes);
 	if (ret)
@@ -1343,11 +1338,13 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 	if (ret)
 		goto release;
 	memcpy(a5->request.cpu + PAGE_SIZE, job->striping, stripe_bytes);
-	memcpy(a5->request.cpu + iq_offset, job->iq, job->iq_bytes);
+	ret = camss_a5_ipe_encode_bypass_iq(a5->request.cpu + iq_offset, CAMSS_A5_IPE_IQ_BYTES);
+	if (ret)
+		goto release;
 	memcpy(a5->image_input.cpu, job->input, input_bytes);
 	memset(a5->image_output.cpu, 0xa5, output_bytes);
 	frame.striping = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + PAGE_SIZE, stripe_bytes };
-	frame.iq = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + iq_offset, job->iq_bytes };
+	frame.iq = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + iq_offset, CAMSS_A5_IPE_IQ_BYTES };
 	frame.scratch = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + scratch_offset, session->scratch_bytes };
 	frame.bl = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + bl_offset, job->bl_bytes };
 	frame.input = (struct camss_a5_ipe_buffer){ IMAGE_INPUT_IOVA, input_bytes };
