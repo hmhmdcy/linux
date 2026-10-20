@@ -38,6 +38,10 @@ struct camss_a5 {
 
 /* The owner installs PM callbacks which delegate to runtime_resume/suspend,
  * and enables runtime PM after init. Lifecycle/commands use a sleeping mutex.
+ * Start failure attempts CPU/IRQ quiescence but retains backing and any PM
+ * reference. The owner must call stop after either start success or failure.
+ * Inspect firmware RAM only after successful quiescence, with CPU/IRQ off,
+ * block reset asserted and all mappings/PM ownership still held.
  * Failed teardown retains mapped backing; do not unbind until cleanup succeeds.
  */
 int camss_a5_init(struct platform_device *pdev, struct camss_a5 *a5);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Temporary bootstrap diagnostic. No image sessions or sensor changes. */
+#include <linux/dma-mapping.h>
 #include <linux/firmware.h>
 #include <linux/iommu.h>
 #include <linux/module.h>
@@ -19,7 +20,10 @@ static char sfr[512];
 module_param_string(result, result, sizeof(result), 0444);
 module_param_string(sfr, sfr, sizeof(sfr), 0444);
 static int overlay_id, test_error;
-static bool finished, pinned;
+static bool finished, pinned, held_failure;
+static bool hold_start_failure;
+module_param(hold_start_failure, bool, 0444);
+MODULE_PARM_DESC(hold_start_failure, "Keep quiesced failed boot RAM and PM until cleanup");
 static const char *phase = "waiting";
 static unsigned int group_devices;
 
@@ -66,6 +70,8 @@ static int cleanup(void)
 {
 	int ret = device_a5 ? camss_a5_stop(device_a5) : 0;
 
+	if (!ret)
+		held_failure = false;
 	if (!ret && pinned && !camss_a5_backing_owned(device_a5) &&
 	    !device_a5->cpu_enabled && !device_a5->power_held &&
 	    !device_a5->resources.enabled_groups && !device_a5->resources.held_domains) {
@@ -86,13 +92,61 @@ static ssize_t cleanup_store(struct device *dev, struct device_attribute *attr,
 	ret = cleanup();
 	if (ret)
 		test_error = ret;
+	else
+		phase = "cleaned";
 	update_result();
 	mutex_unlock(&test_lock);
 	return ret ? ret : count;
 }
 static DEVICE_ATTR_WO(cleanup);
+/* Temporary root-only diagnostic view. No /dev/mem access and no device
+ * access after cleanup: reads are serialized against the same owner lock.
+ */
+static ssize_t firmware_read(struct file *file, struct kobject *kobj,
+			     const struct bin_attribute *attr, char *buffer,
+			     loff_t offset, size_t count)
+{
+	struct device *dev = kobj_to_dev(kobj);
+	struct camss_a5 *a5;
+	ssize_t ret = -ENODATA;
+
+	mutex_lock(&test_lock);
+	a5 = device_a5;
+	if (!held_failure || !a5 || a5 != dev_get_drvdata(dev))
+		goto done;
+	mutex_lock(&a5->lock);
+	if (a5->cpu_enabled || a5->irq_enabled || !a5->reset_asserted ||
+	    !a5->power_held || !a5->firmware.cpu ||
+	    a5->firmware.mapped != a5->firmware.bytes)
+		goto unlock;
+	if (offset < 0) {
+		ret = -EINVAL;
+		goto unlock;
+	}
+	ret = 0;
+	if (offset >= a5->firmware.bytes)
+		goto unlock;
+	count = min_t(size_t, count, a5->firmware.bytes - offset);
+	dma_rmb();
+	memcpy(buffer, a5->firmware.cpu + offset, count);
+	ret = count;
+unlock:
+	mutex_unlock(&a5->lock);
+done:
+	mutex_unlock(&test_lock);
+	return ret;
+}
+static const struct bin_attribute firmware_attribute = {
+	.attr = { .name = "firmware", .mode = 0400 },
+	.size = CAMSS_A5_FW_WINDOW,
+	.read = firmware_read,
+};
+static const struct bin_attribute *test_bin_attributes[] = { &firmware_attribute, NULL };
 static struct attribute *test_attributes[] = { &dev_attr_cleanup.attr, NULL };
-static const struct attribute_group test_group = { .attrs = test_attributes };
+static const struct attribute_group test_group = {
+	.attrs = test_attributes,
+	.bin_attrs = test_bin_attributes,
+};
 static const struct attribute_group *test_groups[] = { &test_group, NULL };
 
 static int test_resume(struct device *dev)
@@ -177,9 +231,17 @@ static int boot_test_probe(struct platform_device *pdev)
 	phase = "ping";
 	ret = camss_a5_ping(a5, 0x353536706d636173ULL);
 done:
-	stop = cleanup();
-	if (stop)
-		ret = stop;
+	if (ret && hold_start_failure && a5->cpu_release_attempted &&
+	    !a5->cleanup_error && !a5->cpu_enabled && !a5->irq_enabled &&
+	    a5->reset_asserted && a5->power_held && a5->firmware.cpu &&
+	    a5->firmware.mapped == a5->firmware.bytes) {
+		held_failure = true;
+		phase = "failed-held";
+	} else {
+		stop = cleanup();
+		if (stop)
+			ret = stop;
+	}
 	if ((camss_a5_backing_owned(a5) || a5->cpu_enabled || a5->power_held ||
 	     a5->resources.enabled_groups || a5->resources.held_domains) && !pinned) {
 		__module_get(THIS_MODULE);

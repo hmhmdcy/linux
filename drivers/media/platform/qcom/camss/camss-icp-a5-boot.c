@@ -337,7 +337,7 @@ static int prepare_memory(struct camss_a5 *a5, const struct firmware *firmware)
 	return camss_a5_fw_memory_map(&a5->heap);
 }
 
-static int stop_locked(struct camss_a5 *a5)
+static int quiesce_locked(struct camss_a5 *a5)
 {
 	void __iomem *base = a5->resources.sierra;
 	u32 value;
@@ -377,6 +377,16 @@ static int stop_locked(struct camss_a5 *a5)
 		a5->irq_enabled = false;
 	}
 	capture_shared_state(a5);
+	return 0;
+}
+
+static int stop_locked(struct camss_a5 *a5)
+{
+	int ret;
+
+	ret = quiesce_locked(a5);
+	if (ret)
+		return ret;
 	/* Retire all firmware DMA aliases while the supplier is still powered.
 	 * A failed unmap keeps the PM reference and backing for a later retry.
 	 */
@@ -500,7 +510,11 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	goto unlock;
 fail:
 	publish_start_failure(a5);
-	a5->cleanup_error = stop_locked(a5);
+	/* Keep owned RAM, aliases and the PM reference until the owner calls
+	 * stop. A failed boot can then be inspected after CPU/IRQ quiescence,
+	 * before IOMMU retirement or supplier power-down loses the evidence.
+	 */
+	a5->cleanup_error = quiesce_locked(a5);
 unlock:
 	mutex_unlock(&a5->lock);
 	return ret;
