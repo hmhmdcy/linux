@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Temporary A5/IPE session diagnostic. No image frames or sensor changes. */
+/* Temporary A5/IPE synthetic frame diagnostic; no sensor changes. */
 #include <linux/device/bus.h>
 #include <linux/dma-mapping.h>
+#include <linux/crc32.h>
+#include <linux/vmalloc.h>
 #include <linux/elf.h>
 #include <linux/firmware.h>
 #include <linux/iommu.h>
@@ -15,6 +17,7 @@
 #include <linux/unaligned.h>
 
 #include "camss-icp-a5-boot.h"
+#include "camss-icp-a5-ipe.h"
 #include "camss-icp-a5-boot-test-blob.h"
 
 static DEFINE_MUTEX(test_lock);
@@ -48,6 +51,102 @@ static unsigned int snapshot_offset_count, snapshot_word_count;
 static const u8 *snapshot_boot_code;
 module_param_array(snapshot_offsets, uint, &snapshot_offset_count, 0444);
 module_param_array(snapshot_words, uint, &snapshot_word_count, 0444);
+
+#define TEST_IMAGE_BYTES (640U * 480U * 3U / 2U)
+static void *test_output;
+static u32 test_output_bytes, test_input_crc, test_output_crc;
+static bool enable_frame;
+module_param(enable_frame, bool, 0400);
+
+static int test_frame(struct device *dev, struct camss_a5 *a5)
+{
+	const struct firmware *stripe = NULL, *iq = NULL;
+	struct camss_a5_ipe_job job = {};
+	u8 *input;
+	unsigned int x, y;
+	int ret;
+
+	test_output_bytes = test_input_crc = test_output_crc = 0;
+	kvfree(test_output);
+	test_output = NULL;
+	input = kvzalloc(TEST_IMAGE_BYTES, GFP_KERNEL);
+	if (!input)
+		return -ENOMEM;
+	test_output = kvzalloc(TEST_IMAGE_BYTES, GFP_KERNEL);
+	if (!test_output) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	ret = request_firmware_direct(&stripe, "qcom/sm8150/samurai-ipe381-stripe.bin", dev);
+	if (ret)
+		goto out;
+	ret = request_firmware_direct(&iq, "qcom/sm8150/samurai-ipe381-iq.bin", dev);
+	if (ret)
+		goto out;
+	for (y = 0; y < 480; y++)
+		for (x = 0; x < 640; x++)
+			input[y * 640 + x] = 16 + ((x / 8 + y / 8 * 3) % 28) * 8;
+	for (y = 0; y < 240; y++) {
+		for (x = 0; x < 640; x += 2) {
+			input[640 * 480 + y * 640 + x] = 96 + (x / 80 % 2) * 64;
+			input[640 * 480 + y * 640 + x + 1] = 64 + (y / 60 % 2) * 96;
+		}
+	}
+	test_input_crc = crc32_le(0, input, TEST_IMAGE_BYTES);
+	job.striping = stripe->data;
+	job.striping_bytes = stripe->size;
+	job.iq = iq->data;
+	job.iq_bytes = iq->size;
+	job.input = input;
+	job.input_bytes = TEST_IMAGE_BYTES;
+	job.output = test_output;
+	job.output_bytes = TEST_IMAGE_BYTES;
+	job.bl_bytes = 156512;
+	job.request_id = 1;
+	job.max_cores = 1;
+	job.target_time_ns = 100000000;
+	ret = camss_a5_ipe_run(a5, &session_rt, &job);
+	if (!ret) {
+		test_output_bytes = TEST_IMAGE_BYTES;
+		test_output_crc = crc32_le(0, test_output, TEST_IMAGE_BYTES);
+	}
+out:
+	if (iq)
+		release_firmware(iq);
+	if (stripe)
+		release_firmware(stripe);
+	kvfree(input);
+	return ret;
+}
+
+static ssize_t image_read(struct file *file, struct kobject *kobj,
+			  const struct bin_attribute *attr, char *buffer,
+			  loff_t offset, size_t count)
+{
+	ssize_t ret = -ENODATA;
+
+	mutex_lock(&test_lock);
+	if (!finished || test_error || !test_output || !test_output_bytes)
+		goto out;
+	if (offset < 0) {
+		ret = -EINVAL;
+		goto out;
+	}
+	ret = 0;
+	if (offset >= test_output_bytes)
+		goto out;
+	count = min_t(size_t, count, test_output_bytes - offset);
+	memcpy(buffer, test_output + offset, count);
+	ret = count;
+out:
+	mutex_unlock(&test_lock);
+	return ret;
+}
+static const struct bin_attribute image_attribute = {
+	.attr = { .name = "image", .mode = 0400 },
+	.size = TEST_IMAGE_BYTES,
+	.read = image_read,
+};
 
 static bool snapshot_ranges_valid(u32 bytes)
 {
@@ -157,7 +256,7 @@ static void update_result(void)
 		  "\"cpu_enabled\":%s,\"irq_enabled\":%s,\"power_held\":%s,\"backing_owned\":%s,"
 		  "\"mapped_bytes\":%u,\"remaining_groups\":%u,\"remaining_domains\":%u,"
 		  "\"interrupts\":%u,\"messages\":%u,\"debug_packets\":%u,\"watchdogs\":%u,\"protocol_errors\":%u,"
-		  "\"last_type\":%u,\"queue_state\":[%u,%u,%u,%u,%u,%u],\"image_sessions\":%u,\"session_creates\":%u,\"session_destroys\":%u,\"session_peak\":%u,\"session_uncertain\":%s,\"io_configs\":%u,\"config_maps\":%u,\"config_unmaps\":%u,\"config_fw_mapped\":%s,\"scratch_bytes\":[%u,%u],\"image_frames\":0}",
+		  "\"last_type\":%u,\"queue_state\":[%u,%u,%u,%u,%u,%u],\"image_sessions\":%u,\"session_creates\":%u,\"session_destroys\":%u,\"session_peak\":%u,\"session_uncertain\":%s,\"io_configs\":%u,\"config_maps\":%u,\"config_unmaps\":%u,\"config_fw_mapped\":%s,\"scratch_bytes\":[%u,%u],\"image_frames\":%u,\"frames_completed\":%u,\"transfer_maps\":%u,\"transfer_unmaps\":%u,\"ipe_dma_pending\":%s,\"request_fw_mapped\":%s,\"engine_dma_capable\":%s,\"ipe_reset_acks\":[%u,%u],\"image_bytes\":%u,\"input_crc\":%u,\"output_crc\":%u}",
 		  finished ? "true" : "false", phase, test_error, a5->cleanup_error, a5->pc_error,
 		  a5->cpu_release_attempted ? "true" : "false", a5->init_response, a5->fw_version,
 		  a5->response_before, a5->init_bytes,
@@ -165,14 +264,19 @@ static void update_result(void)
 		  a5->pc_done ? "true" : "false", a5->reset_asserted ? "true" : "false",
 		  a5->cpu_enabled ? "true" : "false", a5->irq_enabled ? "true" : "false",
 		  a5->power_held ? "true" : "false", camss_a5_backing_owned(a5) ? "true" : "false",
-		  a5->firmware.mapped + a5->shared.mapped + a5->heap.mapped + a5->config.mapped,
+		  a5->firmware.mapped + a5->shared.mapped + a5->heap.mapped + a5->config.mapped +
+		  a5->request.mapped + a5->image_input.mapped + a5->image_output.mapped,
 		  a5->resources.enabled_groups, a5->resources.held_domains,
 		  a5->interrupts, a5->messages, a5->debug_packets, a5->watchdogs, a5->protocol_errors,
 		  a5->last_type, a5->queue_state[0], a5->queue_state[1], a5->queue_state[2],
 		  a5->queue_state[3], a5->queue_state[4], a5->queue_state[5],
 		  a5->session_count, a5->session_creates, a5->session_destroys, a5->session_peak,
 		  a5->session_uncertain ? "true" : "false", a5->io_configs, a5->config_maps, a5->config_unmaps,
-		  a5->config_fw_mapped ? "true" : "false", scratch_observed[0], scratch_observed[1]);
+		  a5->config_fw_mapped ? "true" : "false", scratch_observed[0], scratch_observed[1],
+		  a5->frames_submitted, a5->frames_completed, a5->transfer_maps, a5->transfer_unmaps,
+		  a5->ipe_dma_pending ? "true" : "false", a5->request_fw_mapped ? "true" : "false",
+		  a5->engine_dma_capable ? "true" : "false", a5->resources.ipe_reset_acks[0],
+		  a5->resources.ipe_reset_acks[1], test_output_bytes, test_input_crc, test_output_crc);
 }
 
 static int cleanup(void)
@@ -250,7 +354,7 @@ static const struct bin_attribute firmware_attribute = {
 	.size = CAMSS_A5_FW_WINDOW,
 	.read = firmware_read,
 };
-static const struct bin_attribute *test_bin_attributes[] = { &firmware_attribute, NULL };
+static const struct bin_attribute *test_bin_attributes[] = { &firmware_attribute, &image_attribute, NULL };
 static void run_locked(struct device *dev);
 
 static ssize_t run_store(struct device *dev, struct device_attribute *attr,
@@ -408,6 +512,12 @@ static void run_locked(struct device *dev)
 	if (ret)
 		goto done;
 	scratch_observed[1] = session_non_rt.scratch_bytes;
+	if (enable_frame) {
+		phase = "process-ipe-rt";
+		ret = test_frame(dev, a5);
+		if (ret)
+			goto done;
+	}
 	phase = "destroy-ipe-non-rt";
 	ret = camss_a5_ipe_destroy(a5, &session_non_rt);
 	if (ret)
@@ -454,6 +564,9 @@ static void boot_test_remove(struct platform_device *pdev)
 	if (device_a5->resources.enabled_groups || device_a5->resources.held_domains)
 		camss_a5_runtime_suspend(device_a5);
 	camss_a5_resources_release(&device_a5->resources);
+	kvfree(test_output);
+	test_output = NULL;
+	test_output_bytes = 0;
 	device_a5 = NULL;
 	mutex_unlock(&test_lock);
 }
@@ -472,6 +585,7 @@ static struct platform_driver boot_test_driver = {
 		.pm = pm_ptr(&test_ops),
 		.dev_groups = test_groups,
 		.probe_type = PROBE_FORCE_SYNCHRONOUS,
+		.suppress_bind_attrs = true,
 	},
 };
 

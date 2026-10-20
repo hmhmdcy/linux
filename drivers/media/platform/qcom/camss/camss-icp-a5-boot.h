@@ -47,6 +47,7 @@ struct camss_a5 {
 	struct reset_control *reset;
 	phys_addr_t firmware_physical;
 	struct camss_a5_fw_memory firmware, shared, heap, config;
+	struct camss_a5_fw_memory request, image_input, image_output;
 	struct camss_a5_ring rings[CAMSS_A5_QUEUE_COUNT];
 	struct camss_a5_qtable *table;
 	struct completion response;
@@ -69,6 +70,9 @@ struct camss_a5 {
 	bool command_queued, session_reply, session_uncertain;
 	struct camss_a5_session *config_owner;
 	bool config_fw_mapped;
+	bool engine_dma_capable, ipe_dma_pending, request_fw_mapped;
+	struct camss_a5_session *request_owner;
+	u32 frames_submitted, frames_completed, transfer_maps, transfer_unmaps;
 	u32 session_scratch_bytes, io_configs, config_maps, config_unmaps;
 	u32 session_header_error, session_payload_status;
 	bool power_held, irq_enabled, cpu_enabled, initialized;

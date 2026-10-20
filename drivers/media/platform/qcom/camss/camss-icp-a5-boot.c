@@ -8,6 +8,8 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
+#include <linux/mm.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -16,6 +18,7 @@
 #include <linux/vmalloc.h>
 
 #include "camss-icp-a5-boot.h"
+#include "camss-icp-a5-ipe.h"
 
 #define A5_RESET 0x04
 #define A5_CONTROL 0x08
@@ -69,6 +72,7 @@
 #define IPE_ASYNC_DIRECT_ACK 0x102000aU
 #define IPE_DESTROY 8U
 #define IPE_CONFIG_IO 5U
+#define IPE_FRAME_PROCESS 6U
 #define IPE_MEM_MAP 14U
 #define IPE_MEM_UNMAP 15U
 #define IPE_ASYNC_INDIRECT 0x101000eU
@@ -79,6 +83,13 @@
  */
 #define CONFIG_IOVA (SHARED_IOVA + 0x200000U)
 #define CONFIG_BYTES 4096U
+#define REQUEST_IOVA 0x07800000U
+#define REQUEST_MAX 0x100000U
+#define IMAGE_INPUT_IOVA 0x20000000U
+#define IMAGE_OUTPUT_IOVA 0x24000000U
+#define IMAGE_WINDOW 0x04000000U
+
+static bool has_ipe_sid_group(struct device *dev);
 
 static enum hrtimer_restart boot_timeout(struct hrtimer *timer)
 {
@@ -173,12 +184,14 @@ static void process_message(struct camss_a5 *a5, size_t bytes)
 		if (a5->session_opcode != IPE_DESTROY &&
 		    a5->session_opcode != IPE_MEM_MAP &&
 		    a5->session_opcode != IPE_MEM_UNMAP &&
-		    a5->session_opcode != IPE_CONFIG_IO)
+		    a5->session_opcode != IPE_CONFIG_IO &&
+		    a5->session_opcode != IPE_FRAME_PROCESS)
 			goto malformed;
 		if ((a5->session_opcode == IPE_DESTROY && bytes != 48) ||
 		    ((a5->session_opcode == IPE_MEM_MAP ||
 		      a5->session_opcode == IPE_MEM_UNMAP) && bytes != 44) ||
-		    (a5->session_opcode == IPE_CONFIG_IO && bytes != 56))
+		    (a5->session_opcode == IPE_CONFIG_IO && bytes != 56) ||
+		    (a5->session_opcode == IPE_FRAME_PROCESS && bytes != 72))
 			goto malformed;
 		if (get_unaligned_le64(a5->message + 12) != a5->session_cookie ||
 		    get_unaligned_le64(a5->message + 20) != a5->session_cookie2)
@@ -191,7 +204,8 @@ static void process_message(struct camss_a5 *a5, size_t bytes)
 		 */
 		a5->session_payload_status =
 			(a5->session_opcode == IPE_CONFIG_IO ||
-			 a5->session_opcode == IPE_DESTROY) ?
+			 a5->session_opcode == IPE_DESTROY ||
+			 a5->session_opcode == IPE_FRAME_PROCESS) ?
 			get_unaligned_le32(a5->message + 32) : 0;
 		error = a5->session_header_error ?: a5->session_payload_status;
 		if (!error && a5->session_opcode == IPE_CONFIG_IO)
@@ -350,17 +364,19 @@ static int encode_ipe_io(void *destination, u32 bytes,
 	return 0;
 }
 
-static int config_region_locked(struct camss_a5 *a5,
-				struct camss_a5_session *session, bool map)
+static int region_packet_locked(struct camss_a5 *a5,
+				struct camss_a5_session *session,
+				struct camss_a5_fw_memory *memory, bool map)
 {
 	u8 packet[56] = {};
 	int ret;
 
+	a5->command_queued = false;
 	if (session->a5 != a5 || !a5->initialized || a5->session_uncertain)
 		return -EIO;
-	if ((map && a5->config_fw_mapped) ||
-	    (!map && (!a5->config_fw_mapped || a5->config_owner != session)))
-		return -EBUSY;
+	if (!memory || !memory->cpu || !memory->bytes ||
+	    memory->mapped != memory->bytes)
+		return -EINVAL;
 	ret = session_token(a5);
 	if (ret)
 		return ret;
@@ -374,9 +390,23 @@ static int config_region_locked(struct camss_a5 *a5,
 	put_unaligned_le32(session->handle, packet + 32);
 	put_unaligned_le64(a5->session_cookie, packet + 36);
 	put_unaligned_le32(1, packet + 44);
-	put_unaligned_le32(a5->config.iova, packet + 48);
-	put_unaligned_le32(a5->config.bytes, packet + 52);
+	put_unaligned_le32(memory->iova, packet + 48);
+	put_unaligned_le32(memory->bytes, packet + 52);
 	ret = send_packet(a5, packet, sizeof(packet), IPE_ASYNC_DIRECT_ACK);
+	return ret;
+}
+
+static int config_region_locked(struct camss_a5 *a5,
+				struct camss_a5_session *session, bool map)
+{
+	int ret;
+
+	if (session->a5 != a5 || !a5->initialized || a5->session_uncertain)
+		return -EIO;
+	if ((map && a5->config_fw_mapped) ||
+	    (!map && (!a5->config_fw_mapped || a5->config_owner != session)))
+		return -EBUSY;
+	ret = region_packet_locked(a5, session, &a5->config, map);
 	if (map && a5->command_queued) {
 		/* A failed reply can follow a partially applied firmware mapping.
 		 * Keep its backing until an acknowledged unmap or CPU quiescence.
@@ -547,6 +577,8 @@ static int ipe_destroy_locked(struct camss_a5 *a5,
 		return -ENODEV;
 	if (a5->session_uncertain)
 		return -EIO;
+	if (a5->request_fw_mapped && a5->request_owner == session)
+		return -EBUSY;
 	if (a5->config_fw_mapped && a5->config_owner == session) {
 		ret = config_region_locked(a5, session, false);
 		if (ret)
@@ -613,11 +645,14 @@ static void invalidate_sessions(struct camss_a5 *a5)
 	a5->session_uncertain = false;
 	a5->config_fw_mapped = false;
 	a5->config_owner = NULL;
+	a5->request_fw_mapped = false;
+	a5->request_owner = NULL;
 }
 
 bool camss_a5_backing_owned(const struct camss_a5 *a5)
 {
-	return a5->firmware.cpu || a5->shared.cpu || a5->heap.cpu || a5->config.cpu;
+	return a5->firmware.cpu || a5->shared.cpu || a5->heap.cpu || a5->config.cpu ||
+	       a5->request.cpu || a5->image_input.cpu || a5->image_output.cpu;
 }
 EXPORT_SYMBOL_GPL(camss_a5_backing_owned);
 
@@ -683,11 +718,14 @@ static void publish_start_failure(struct camss_a5 *a5)
 
 static int free_memory(struct camss_a5 *a5)
 {
-	struct camss_a5_fw_memory *memories[] = { &a5->config, &a5->heap, &a5->shared, &a5->firmware };
+	struct camss_a5_fw_memory *memories[] = {
+		&a5->image_output, &a5->image_input, &a5->request,
+		&a5->config, &a5->heap, &a5->shared, &a5->firmware,
+	};
 	unsigned int i;
 	int ret;
 
-	if (a5->cpu_enabled)
+	if (a5->cpu_enabled || a5->ipe_dma_pending)
 		return -EBUSY;
 	capture_shared_state(a5);
 	for (i = 0; i < ARRAY_SIZE(memories); i++) {
@@ -812,6 +850,12 @@ static int quiesce_locked(struct camss_a5 *a5)
 		disable_irq(a5->irq);
 		a5->irq_enabled = false;
 	}
+	if (a5->ipe_dma_pending) {
+		ret = camss_a5_ipe_quiesce(&a5->resources);
+		if (ret)
+			return ret;
+		a5->ipe_dma_pending = false;
+	}
 	invalidate_sessions(a5);
 	capture_shared_state(a5);
 	return 0;
@@ -914,6 +958,8 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	a5->boot_expired = false;
 	a5->session_creates = a5->session_destroys = a5->session_peak = 0;
 	a5->io_configs = a5->config_maps = a5->config_unmaps = 0;
+	a5->frames_submitted = a5->frames_completed = 0;
+	a5->transfer_maps = a5->transfer_unmaps = 0;
 	ret = prepare_memory(a5, firmware);
 	if (ret)
 		goto fail;
@@ -932,6 +978,12 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	if (ret)
 		goto fail;
 	a5->reset_asserted = false;
+	if (a5->engine_dma_capable) {
+		ret = camss_a5_ipe_quiesce(&a5->resources);
+		if (ret)
+			goto fail;
+		dev_info(a5->dev, "A5 IPE reset ACKs verified before CPU release\n");
+	}
 	writel(0, base + A5_INT_ENABLE);
 	writel(7, base + A5_INT_CLEAR);
 	writel(0, base + A5_INIT_REQUEST);
@@ -1044,7 +1096,7 @@ EXPORT_SYMBOL_GPL(camss_a5_runtime_resume);
 
 int camss_a5_runtime_suspend(struct camss_a5 *a5)
 {
-	if (a5->cpu_enabled)
+	if (a5->cpu_enabled || a5->ipe_dma_pending || camss_a5_backing_owned(a5))
 		return -EBUSY;
 	/* A cooperative stop has already disabled A5 through its local CSR.
 	 * Do not assert the global ICP/AHB reset in the normal PM path.
@@ -1099,6 +1151,7 @@ int camss_a5_init(struct platform_device *pdev, struct camss_a5 *a5)
 	hrtimer_setup(&a5->boot_timer, boot_timeout, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	init_completion(&a5->response);
 	a5->dev = dev;
+	a5->engine_dma_capable = has_ipe_sid_group(dev);
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
 	if (ret)
 		return ret;
@@ -1129,3 +1182,235 @@ int camss_a5_init(struct platform_device *pdev, struct camss_a5 *a5)
 					dev_name(dev), a5);
 }
 EXPORT_SYMBOL_GPL(camss_a5_init);
+
+
+static bool has_ipe_sid_group(struct device *dev)
+{
+	static const u32 specs[][2] = {
+		{ 0x2222, 0 }, { 0x2080, 0x20 }, { 0x20a0, 0x20 },
+		{ 0x2100, 0x20 }, { 0x2120, 0x20 }, { 0x20c0, 0 }, { 0x2140, 0 },
+	};
+	struct device_node *provider = NULL;
+	struct of_phandle_args args;
+	unsigned int i;
+	bool valid = false;
+
+	if (of_count_phandle_with_args(dev->of_node, "iommus", "#iommu-cells") != (int)ARRAY_SIZE(specs))
+		return false;
+	for (i = 0; i < ARRAY_SIZE(specs); i++) {
+		if (of_parse_phandle_with_args(dev->of_node, "iommus", "#iommu-cells", i, &args)) {
+			valid = false;
+			goto out;
+		}
+		if (!provider)
+			provider = of_node_get(args.np);
+		valid = args.np == provider && args.args_count == 2 &&
+			args.args[0] == specs[i][0] && args.args[1] == specs[i][1];
+		of_node_put(args.np);
+		if (!valid)
+			goto out;
+	}
+out:
+	of_node_put(provider);
+	return valid;
+}
+
+// SPDX-License-Identifier: GPL-2.0-only
+static int free_transfer_memory(struct camss_a5 *a5)
+{
+	struct camss_a5_fw_memory *memories[] = {
+		&a5->image_output, &a5->image_input, &a5->request,
+	};
+	unsigned int i;
+	int ret;
+
+	if (a5->ipe_dma_pending || a5->request_fw_mapped)
+		return -EBUSY;
+	for (i = 0; i < ARRAY_SIZE(memories); i++) {
+		ret = camss_a5_fw_memory_unmap(memories[i]);
+		if (ret)
+			return ret;
+		ret = camss_a5_fw_memory_free(memories[i]);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+static int transfer_region_locked(struct camss_a5 *a5,
+				  struct camss_a5_session *session, bool map)
+{
+	int ret;
+
+	if ((map && a5->request_fw_mapped) ||
+	    (!map && (!a5->request_fw_mapped || a5->request_owner != session)))
+		return -EBUSY;
+	ret = region_packet_locked(a5, session, &a5->request, map);
+	if (map && a5->command_queued) {
+		a5->request_fw_mapped = true;
+		a5->request_owner = session;
+	}
+	if (ret) {
+		session_command_failed(a5, ret);
+		if (map && a5->command_queued)
+			a5->session_uncertain = true;
+		return ret;
+	}
+	if (map) {
+		a5->transfer_maps++;
+	} else {
+		a5->request_fw_mapped = false;
+		a5->request_owner = NULL;
+		a5->transfer_unmaps++;
+	}
+	return 0;
+}
+
+static int transfer_alloc(struct camss_a5 *a5,
+			  struct camss_a5_fw_memory *memory, u32 iova, u32 bytes)
+{
+	int ret = camss_a5_iova_memory_alloc(a5->dev, memory, iova, bytes);
+
+	return ret ?: camss_a5_fw_memory_map(memory);
+}
+
+int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
+		     const struct camss_a5_ipe_job *job)
+{
+	struct camss_a5_ipe_frame frame = {};
+	u8 packet[40] = {};
+	u64 input_bytes, output_bytes, parcel;
+	u32 stripe_bytes, iq_offset, scratch_offset, bl_offset;
+	int ret, cleanup;
+
+	if (!a5 || !session || !job || !job->striping || !job->iq ||
+	    !job->input || !job->output || job->iq_bytes != CAMSS_A5_IPE_IQ_BYTES ||
+	    !job->bl_bytes || job->bl_bytes < 32 ||
+	    !job->max_cores || job->max_cores > 2 || !job->target_time_ns)
+		return -EINVAL;
+	/* Bring-up accepts the verified disabled-module IQ fixture only.
+	 * Validated module/CDM generation is a separate next step.
+	 */
+	if (memchr_inv(job->iq, 0, job->iq_bytes))
+		return -EOPNOTSUPP;
+	ret = camss_a5_ipe_striping_bytes(job->striping, job->striping_bytes,
+					 &stripe_bytes);
+	if (ret)
+		return ret;
+	mutex_lock(&a5->lock);
+	if (session->a5 != a5 || !session->handle || !session->configured ||
+	    !a5->initialized || !a5->cpu_enabled || !a5->engine_dma_capable) {
+		ret = -ENODEV;
+		goto done;
+	}
+	if (a5->session_uncertain || a5->ipe_dma_pending ||
+	    a5->request.cpu || a5->image_input.cpu || a5->image_output.cpu) {
+		ret = -EBUSY;
+		goto done;
+	}
+	if (!nv12_layout_valid(&session->io.input) ||
+	    !nv12_layout_valid(&session->io.output)) {
+		ret = -EINVAL;
+		goto done;
+	}
+	input_bytes = (u64)session->io.input.stride * session->io.input.slice_height;
+	input_bytes += input_bytes / 2;
+	output_bytes = (u64)session->io.output.stride * session->io.output.slice_height;
+	output_bytes += output_bytes / 2;
+	if (!input_bytes || !output_bytes || input_bytes > IMAGE_WINDOW ||
+	    output_bytes > IMAGE_WINDOW || job->input_bytes < input_bytes ||
+	    job->output_bytes < output_bytes || session->scratch_bytes > REQUEST_MAX ||
+	    job->bl_bytes > REQUEST_MAX || stripe_bytes > REQUEST_MAX) {
+		ret = -EINVAL;
+		goto done;
+	}
+	/* The stripe begins on its own page after the frame packet. */
+	iq_offset = PAGE_SIZE + PAGE_ALIGN(stripe_bytes);
+	scratch_offset = iq_offset + PAGE_ALIGN(CAMSS_A5_IPE_IQ_BYTES);
+	bl_offset = scratch_offset + PAGE_ALIGN(session->scratch_bytes);
+	parcel = PAGE_ALIGN((u64)bl_offset + job->bl_bytes);
+	if (!session->scratch_bytes || parcel > REQUEST_MAX) {
+		ret = -EINVAL;
+		goto done;
+	}
+	ret = transfer_alloc(a5, &a5->request, REQUEST_IOVA, parcel);
+	if (ret)
+		goto release;
+	ret = transfer_alloc(a5, &a5->image_input, IMAGE_INPUT_IOVA, PAGE_ALIGN(input_bytes));
+	if (ret)
+		goto release;
+	ret = transfer_alloc(a5, &a5->image_output, IMAGE_OUTPUT_IOVA, PAGE_ALIGN(output_bytes));
+	if (ret)
+		goto release;
+	memcpy(a5->request.cpu + PAGE_SIZE, job->striping, stripe_bytes);
+	memcpy(a5->request.cpu + iq_offset, job->iq, job->iq_bytes);
+	memcpy(a5->image_input.cpu, job->input, input_bytes);
+	memset(a5->image_output.cpu, 0xa5, output_bytes);
+	frame.striping = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + PAGE_SIZE, stripe_bytes };
+	frame.iq = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + iq_offset, job->iq_bytes };
+	frame.scratch = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + scratch_offset, session->scratch_bytes };
+	frame.bl = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + bl_offset, job->bl_bytes };
+	frame.input = (struct camss_a5_ipe_buffer){ IMAGE_INPUT_IOVA, input_bytes };
+	frame.output = (struct camss_a5_ipe_buffer){ IMAGE_OUTPUT_IOVA, output_bytes };
+	frame.striping_cpu = a5->request.cpu + PAGE_SIZE;
+	frame.required_scratch_bytes = session->scratch_bytes;
+	frame.required_bl_bytes = job->bl_bytes;
+	frame.request_id = job->request_id;
+	frame.max_cores = job->max_cores;
+	frame.target_time_ns = job->target_time_ns;
+	ret = camss_a5_ipe_encode_frame(a5->request.cpu, a5->request.bytes,
+					 &session->io, &frame);
+	if (ret)
+		goto release;
+	dma_wmb();
+	ret = transfer_region_locked(a5, session, true);
+	if (ret)
+		goto release;
+	ret = session_token(a5);
+	if (ret)
+		goto unmap;
+	a5->session_opcode = IPE_FRAME_PROCESS;
+	put_unaligned_le32(sizeof(packet), packet);
+	put_unaligned_le32(IPE_ASYNC_INDIRECT, packet + 4);
+	put_unaligned_le32(IPE_FRAME_PROCESS, packet + 8);
+	put_unaligned_le64(a5->session_cookie, packet + 12);
+	put_unaligned_le64(a5->session_cookie2, packet + 20);
+	put_unaligned_le32(1, packet + 28);
+	put_unaligned_le32(session->handle, packet + 32);
+	put_unaligned_le32(REQUEST_IOVA, packet + 36);
+	a5->ipe_dma_pending = true;
+	ret = send_packet(a5, packet, sizeof(packet), IPE_ASYNC_INDIRECT_ACK);
+	if (a5->command_queued)
+		a5->frames_submitted++;
+	if (!a5->command_queued || !ret)
+		a5->ipe_dma_pending = false;
+	if (ret) {
+		session_command_failed(a5, ret);
+		if (a5->ipe_dma_pending)
+			a5->session_uncertain = true;
+		dev_info(a5->dev, "A5 IPE frame failed ret=%d hfi=%u status=%u queued=%u pending=%u\n",
+			 ret, a5->session_header_error, a5->session_payload_status,
+			 a5->command_queued, a5->ipe_dma_pending);
+	} else {
+		a5->frames_completed++;
+		dma_rmb();
+		memcpy(job->output, a5->image_output.cpu, output_bytes);
+		dev_info(a5->dev, "A5 IPE frame completed request=%u\n", job->request_id);
+	}
+unmap:
+	if (!a5->session_uncertain && !a5->ipe_dma_pending) {
+		cleanup = transfer_region_locked(a5, session, false);
+		if (!ret)
+			ret = cleanup;
+	}
+release:
+	if (!a5->request_fw_mapped && !a5->ipe_dma_pending) {
+		cleanup = free_transfer_memory(a5);
+		if (!ret)
+			ret = cleanup;
+	}
+done:
+	mutex_unlock(&a5->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(camss_a5_ipe_run);
