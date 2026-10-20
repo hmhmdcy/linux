@@ -145,13 +145,11 @@ int camss_a5_ipe_encode_bypass_iq(void *buffer, u32 bytes)
 EXPORT_SYMBOL_GPL(camss_a5_ipe_encode_bypass_iq);
 
 // SPDX-License-Identifier: GPL-2.0-only
-/* Full-frame, unity-scale, 8-bit linear YUV with IQ modules disabled.
- * The target striping policy uses 328-pixel output partitions, rounds the
- * count to the number of cores, and aligns internal boundaries to chroma.
- * A four-pixel fetch halo is retained at internal boundaries.
- * This describes ranges only; it does not serialize the full firmware blob.
+/* Full-frame unity-scale 8-bit YUV. Common range checks preserve output
+ * and count on rejection; the two target policies differ in step and halo.
+ * This is a partition primitive, not a complete LTM striping serializer.
  */
-int camss_a5_ipe_bypass_partitions(u32 width, u32 cores,
+static int ipe_partitions(u32 width, u32 cores, u32 step, u32 halo,
 				 struct camss_a5_ipe_partition *output,
 				 u32 capacity, u32 *count)
 {
@@ -160,7 +158,7 @@ int camss_a5_ipe_bypass_partitions(u32 width, u32 cores,
 	if (!output || !count || width < 128 || width > 8192 || (width & 1) ||
 	    !cores || cores > 2)
 		return -EINVAL;
-	stripes = (width + 327) / 328;
+	stripes = (width + step - 1) / step;
 	stripes = ((stripes + cores - 1) / cores) * cores;
 	if (capacity < stripes)
 		return -ENOSPC;
@@ -171,13 +169,28 @@ int camss_a5_ipe_bypass_partitions(u32 width, u32 cores,
 
 		output[i].output_first = first;
 		output[i].output_last = last;
-		output[i].fetch_first = first < 4 ? 0 : first - 4;
-		output[i].fetch_last = last + 4 < width ? last + 4 : width - 1;
+		output[i].fetch_first = first < halo ? 0 : first - halo;
+		output[i].fetch_last = last + halo < width ? last + halo : width - 1;
 	}
 	*count = stripes;
 	return 0;
 }
+
+int camss_a5_ipe_bypass_partitions(u32 width, u32 cores,
+				 struct camss_a5_ipe_partition *output,
+				 u32 capacity, u32 *count)
+{
+	return ipe_partitions(width, cores, 328, 4, output, capacity, count);
+}
 EXPORT_SYMBOL_GPL(camss_a5_ipe_bypass_partitions);
+
+int camss_a5_ipe_ltm_partitions(u32 width, u32 cores,
+			      struct camss_a5_ipe_partition *output,
+			      u32 capacity, u32 *count)
+{
+	return ipe_partitions(width, cores, 324, 6, output, capacity, count);
+}
+EXPORT_SYMBOL_GPL(camss_a5_ipe_ltm_partitions);
 
 // SPDX-License-Identifier: GPL-2.0-only
 /* SM8150, one full-frame unity-scale pass, linear 8-bit NV12/NV21.

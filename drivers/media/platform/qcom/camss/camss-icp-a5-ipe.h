@@ -103,6 +103,13 @@ struct camss_a5_ipe_partition {
 int camss_a5_ipe_bypass_partitions(u32 width, u32 cores,
 				 struct camss_a5_ipe_partition *output,
 				 u32 capacity, u32 *count);
+/* LTM image-processing partition ranges only. Callers still need the LTM
+ * processing crops, grid and firmware blob before submitting enabled LTM.
+ */
+int camss_a5_ipe_ltm_partitions(u32 width, u32 cores,
+			      struct camss_a5_ipe_partition *output,
+			      u32 capacity, u32 *count);
+
 
 /* One full-frame unity-scale pass, matching NV12/NV21 input and output,
  * even width/height 128..8192; padded even strides/slices are accepted.
