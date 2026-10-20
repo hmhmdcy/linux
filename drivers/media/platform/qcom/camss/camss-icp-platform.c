@@ -123,7 +123,7 @@ static ssize_t cleanup_store(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_WO(cleanup);
 
-static struct attribute *icp_attributes[] = {
+static struct attribute *icp_attrs[] = {
 	&dev_attr_m2m_status.attr, &dev_attr_state.attr, &dev_attr_cleanup.attr, NULL
 };
 ATTRIBUTE_GROUPS(icp);
