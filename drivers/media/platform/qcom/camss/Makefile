@@ -57,3 +57,5 @@ obj-$(CONFIG_VIDEO_QCOM_CAMSS_ICP_A5_POWER_TEST) += camss-icp-a5-power-test.o
 
 qcom-camss-icp-a5-core-y += camss-icp-a5-boot.o camss-icp-a5-ipe.o
 obj-$(CONFIG_VIDEO_QCOM_CAMSS_ICP_A5_BOOT_TEST) += camss-icp-a5-boot-test.o
+
+obj-$(CONFIG_VIDEO_QCOM_CAMSS_ICP_A5_M2M) += camss-icp-a5-m2m.o

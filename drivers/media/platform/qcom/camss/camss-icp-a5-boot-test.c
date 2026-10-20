@@ -18,10 +18,14 @@
 
 #include "camss-icp-a5-boot.h"
 #include "camss-icp-a5-ipe.h"
+#include "camss-icp-a5-m2m.h"
 #include "camss-icp-a5-boot-test-blob.h"
 
 static DEFINE_MUTEX(test_lock);
 static struct camss_a5 *device_a5;
+static struct camss_a5_m2m *m2m_endpoint;
+static bool enable_m2m;
+module_param(enable_m2m, bool, 0400);
 static struct camss_a5_session session_rt, session_non_rt;
 static u32 scratch_observed[2];
 static struct camss_a5_ipe_io test_io;
@@ -42,6 +46,10 @@ static int overlay_id, test_error;
 static bool finished, pinned, held_failure;
 static bool bound_seen;
 module_param(bound_seen, bool, 0444);
+static bool m2m_bound(void)
+{
+	return READ_ONCE(bound_seen);
+}
 static bool hold_start_failure;
 module_param(hold_start_failure, bool, 0444);
 MODULE_PARM_DESC(hold_start_failure, "Keep quiesced failed boot RAM and PM until cleanup");
@@ -317,7 +325,8 @@ static void update_result(void)
 
 static int cleanup(void)
 {
-	int ret = device_a5 ? camss_a5_stop(device_a5) : 0;
+	int ret = m2m_endpoint ? camss_a5_m2m_cleanup(m2m_endpoint) :
+		  device_a5 ? camss_a5_stop(device_a5) : 0;
 
 	if (!ret)
 		held_failure = false;
@@ -400,6 +409,8 @@ static ssize_t run_store(struct device *dev, struct device_attribute *attr,
 
 	if (!sysfs_streq(buffer, "1"))
 		return -EINVAL;
+	if (enable_m2m)
+		return -EOPNOTSUPP;
 	if (!try_module_get(THIS_MODULE))
 		return -ENODEV;
 	mutex_lock(&test_lock);
@@ -418,7 +429,21 @@ static ssize_t run_store(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 static DEVICE_ATTR_WO(run);
-static struct attribute *test_attributes[] = { &dev_attr_cleanup.attr, &dev_attr_run.attr, NULL };
+static ssize_t m2m_status_show(struct device *dev, struct device_attribute *attr,
+			       char *buffer)
+{
+	ssize_t ret;
+
+	mutex_lock(&test_lock);
+	ret = camss_a5_m2m_status(m2m_endpoint, buffer, PAGE_SIZE);
+	update_result();
+	mutex_unlock(&test_lock);
+	return ret;
+}
+static DEVICE_ATTR_RO(m2m_status);
+static struct attribute *test_attributes[] = {
+	&dev_attr_cleanup.attr, &dev_attr_run.attr, &dev_attr_m2m_status.attr, NULL };
+
 static const struct attribute_group test_group = {
 	.attrs = test_attributes,
 	.bin_attrs = test_bin_attributes,
@@ -494,6 +519,20 @@ static int boot_test_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, a5);
 	pm_runtime_set_suspended(dev);
 	pm_runtime_enable(dev);
+	if (enable_m2m) {
+		m2m_endpoint = camss_a5_m2m_register(a5, THIS_MODULE,
+					 "qcom/sm8150/samurai-icp356.elf", m2m_bound);
+		if (IS_ERR(m2m_endpoint)) {
+			ret = PTR_ERR(m2m_endpoint);
+			m2m_endpoint = NULL;
+			pm_runtime_disable(dev);
+			camss_a5_resources_release(&a5->resources);
+			device_a5 = NULL;
+			platform_set_drvdata(pdev, NULL);
+			mutex_unlock(&test_lock);
+			return ret;
+		}
+	}
 	phase = "ready";
 	finished = true;
 	test_error = 0;
@@ -599,7 +638,15 @@ done:
 
 static void boot_test_remove(struct platform_device *pdev)
 {
+	int ret;
+
 	mutex_lock(&test_lock);
+	ret = camss_a5_m2m_unregister(m2m_endpoint);
+	if (WARN_ON(ret)) {
+		mutex_unlock(&test_lock);
+		return;
+	}
+	m2m_endpoint = NULL;
 	cleanup();
 	pm_runtime_disable(&pdev->dev);
 	/* The driver core may runtime-resume the device before ->remove. */
@@ -670,6 +717,8 @@ static int __init boot_test_init(void)
 	u64 image_bytes;
 	int ret;
 
+	if (enable_m2m && enable_frame)
+		return -EINVAL;
 	test_io.input = (struct camss_a5_nv12_layout) {
 		test_width, test_height, test_width, test_height, test_uv_swap };
 	test_io.output = test_io.input;
