@@ -417,6 +417,37 @@ int camss_a5_stop(struct camss_a5 *a5)
 }
 EXPORT_SYMBOL_GPL(camss_a5_stop);
 
+static int program_hfi_parameters(struct camss_a5 *a5)
+{
+	void __iomem *base = a5->resources.sierra;
+	static const u32 fields[][2] = {
+		{ A5_QTABLE_PTR, SHARED_IOVA },
+		{ A5_SFR_PTR, SHARED_IOVA + SFR_OFFSET },
+		{ A5_SHARED_PTR, SHARED_IOVA },
+		{ A5_SHARED_SIZE, SHARED_WINDOW },
+		{ A5_HEAP_PTR, HEAP_IOVA },
+		{ A5_HEAP_SIZE, HEAP_BYTES },
+		{ A5_QDSS_PTR, 0 },
+		{ A5_QDSS_SIZE, 0 },
+		{ A5_IO_PTR, IO_IOVA },
+		{ A5_IO_SIZE, IO_BYTES },
+	};
+	unsigned int i;
+	u32 value;
+
+	for (i = 0; i < ARRAY_SIZE(fields); i++)
+		writel(fields[i][1], base + fields[i][0]);
+	for (i = 0; i < ARRAY_SIZE(fields); i++) {
+		value = readl(base + fields[i][0]);
+		if (value != fields[i][1]) {
+			dev_err(a5->dev, "A5 HFI register %x readback %x expected %x\n",
+				fields[i][0], value, fields[i][1]);
+			return -EIO;
+		}
+	}
+	return 0;
+}
+
 int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 {
 	void __iomem *base = a5->resources.sierra;
@@ -459,17 +490,7 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	writel(0, base + A5_INIT_REQUEST);
 	writel(0, base + A5_INIT_RESPONSE);
 	a5->response_before = readl(base + A5_INIT_RESPONSE);
-	writel(SHARED_IOVA, base + A5_QTABLE_PTR);
-	writel(SHARED_IOVA + SFR_OFFSET, base + A5_SFR_PTR);
-	writel(SHARED_IOVA, base + A5_SHARED_PTR);
-	writel(SHARED_WINDOW, base + A5_SHARED_SIZE);
-	writel(HEAP_IOVA, base + A5_HEAP_PTR);
-	writel(HEAP_BYTES, base + A5_HEAP_SIZE);
-	/* Trace transport is never enabled by this bootstrap. */
-	writel(0, base + A5_QDSS_PTR);
-	writel(0, base + A5_QDSS_SIZE);
-	writel(IO_IOVA, base + A5_IO_PTR);
-	writel(IO_BYTES, base + A5_IO_SIZE);
+
 	dma_wmb();
 	enable_irq(a5->irq);
 	a5->irq_enabled = true;
@@ -480,9 +501,20 @@ int camss_a5_start(struct camss_a5 *a5, const struct firmware *firmware)
 	a5->cpu_release_attempted = true;
 	writel(A5_ENABLE, base + A5_CONTROL);
 	writel(0x10, base + A5_RESET);
-	writel(A5_ENABLE | A5_WAKE | A5_WFI_GATE, base + A5_CONTROL);
-	writel(1, base + A5_INIT_REQUEST);
+	/* Match the OEM cold-boot sequence: CPU reset precedes HFI parameter
+	 * programming. Never request initialization with unverified pointers.
+	 */
+	ret = program_hfi_parameters(a5);
+	if (!ret) {
+		writel(A5_ENABLE | A5_WAKE | A5_WFI_GATE, base + A5_CONTROL);
+		writel(1, base + A5_INIT_REQUEST);
+	}
 	spin_unlock_irqrestore(&a5->control_lock, flags);
+	if (ret) {
+		hrtimer_cancel(&a5->boot_timer);
+		goto fail;
+	}
+	dev_info(a5->dev, "A5 HFI parameters verified after CPU reset\n");
 	ret = readl_poll_timeout(base + A5_INIT_RESPONSE, value,
 				 value == 1 || value == 2 || value == 3 ||
 				 READ_ONCE(a5->boot_expired),
