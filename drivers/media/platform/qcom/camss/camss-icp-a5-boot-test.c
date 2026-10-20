@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Temporary bootstrap diagnostic. No image sessions or sensor changes. */
+#include <linux/device/bus.h>
 #include <linux/dma-mapping.h>
 #include <linux/elf.h>
 #include <linux/firmware.h>
 #include <linux/iommu.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -23,6 +25,8 @@ module_param_string(result, result, sizeof(result), 0444);
 module_param_string(sfr, sfr, sizeof(sfr), 0444);
 static int overlay_id, test_error;
 static bool finished, pinned, held_failure;
+static bool bound_seen;
+module_param(bound_seen, bool, 0444);
 static bool hold_start_failure;
 module_param(hold_start_failure, bool, 0444);
 MODULE_PARM_DESC(hold_start_failure, "Keep quiesced failed boot RAM and PM until cleanup");
@@ -237,7 +241,34 @@ static const struct bin_attribute firmware_attribute = {
 	.read = firmware_read,
 };
 static const struct bin_attribute *test_bin_attributes[] = { &firmware_attribute, NULL };
-static struct attribute *test_attributes[] = { &dev_attr_cleanup.attr, NULL };
+static void run_locked(struct device *dev);
+
+static ssize_t run_store(struct device *dev, struct device_attribute *attr,
+			 const char *buffer, size_t count)
+{
+	int ret = 0;
+
+	if (!sysfs_streq(buffer, "1"))
+		return -EINVAL;
+	if (!try_module_get(THIS_MODULE))
+		return -ENODEV;
+	mutex_lock(&test_lock);
+	if (!device_a5 || device_a5 != dev_get_drvdata(dev) || !finished ||
+	    !READ_ONCE(bound_seen) || camss_a5_backing_owned(device_a5) ||
+	    device_a5->cpu_enabled || device_a5->power_held ||
+	    device_a5->resources.enabled_groups || device_a5->resources.held_domains) {
+		ret = -EBUSY;
+	} else {
+		run_locked(dev);
+	}
+	mutex_unlock(&test_lock);
+	module_put(THIS_MODULE);
+	if (ret)
+		return ret;
+	return count;
+}
+static DEVICE_ATTR_WO(run);
+static struct attribute *test_attributes[] = { &dev_attr_cleanup.attr, &dev_attr_run.attr, NULL };
 static const struct attribute_group test_group = {
 	.attrs = test_attributes,
 	.bin_attrs = test_bin_attributes,
@@ -265,11 +296,10 @@ static const struct dev_pm_ops test_ops = {
 static int boot_test_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	const struct firmware *firmware;
 	struct camss_a5 *a5;
 	struct iommu_group *group;
 	struct device_node *memory;
-	int ret, stop;
+	int ret;
 
 	a5 = devm_kzalloc(dev, sizeof(*a5), GFP_KERNEL);
 	if (!a5)
@@ -314,6 +344,23 @@ static int boot_test_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, a5);
 	pm_runtime_set_suspended(dev);
 	pm_runtime_enable(dev);
+	phase = "ready";
+	finished = true;
+	test_error = 0;
+	update_result();
+	dev_info(dev, "A5 diagnostic probe ready; no firmware started\n");
+	mutex_unlock(&test_lock);
+	return 0;
+}
+
+static void run_locked(struct device *dev)
+{
+	struct camss_a5 *a5 = device_a5;
+	const struct firmware *firmware;
+	int ret, stop;
+
+	finished = false;
+	dev_info(dev, "A5 diagnostic run begin after binding\n");
 	phase = "request-firmware";
 	ret = request_firmware_direct(&firmware, "qcom/sm8150/samurai-icp356.elf", dev);
 	if (ret)
@@ -355,8 +402,11 @@ done:
 	if (!ret)
 		phase = "done";
 	update_result();
-	mutex_unlock(&test_lock);
-	return 0;
+	dev_info(dev, "A5 diagnostic run end ret=%d init=%u ping=%u pc=%u irqs=%u msgs=%u wd=%u proto=%u backing=%u power=%u groups=%u domains=%u\n",
+		 test_error, a5->init_done, a5->ping_done, a5->pc_done,
+		 a5->interrupts, a5->messages, a5->watchdogs, a5->protocol_errors,
+		 camss_a5_backing_owned(a5), a5->power_held,
+		 a5->resources.enabled_groups, a5->resources.held_domains);
 }
 
 static void boot_test_remove(struct platform_device *pdev)
@@ -389,29 +439,76 @@ static struct platform_driver boot_test_driver = {
 	},
 };
 
+/* Observe the normal platform binding notification without altering links. */
+static int test_bus_event(struct notifier_block *block, unsigned long action, void *data)
+{
+	struct device *dev = data;
+	const char *event;
+
+	if (!of_device_is_compatible(dev->of_node, "realme,samurai-a5-icp-boot-test"))
+		return NOTIFY_DONE;
+	switch (action) {
+	case BUS_NOTIFY_BIND_DRIVER:
+		event = "bind";
+		break;
+	case BUS_NOTIFY_BOUND_DRIVER:
+		WRITE_ONCE(bound_seen, true);
+		event = "bound";
+		break;
+	case BUS_NOTIFY_UNBIND_DRIVER:
+		WRITE_ONCE(bound_seen, false);
+		event = "unbind";
+		break;
+	case BUS_NOTIFY_UNBOUND_DRIVER:
+	case BUS_NOTIFY_DRIVER_NOT_BOUND:
+		WRITE_ONCE(bound_seen, false);
+		event = "unbound";
+		break;
+	default:
+		return NOTIFY_DONE;
+	}
+	dev_info(dev, "A5 diagnostic bus event=%s\n", event);
+	return NOTIFY_DONE;
+}
+static struct notifier_block test_bus_notifier = { .notifier_call = test_bus_event };
+
 static int __init boot_test_init(void)
 {
 	int ret;
 
-	ret = platform_driver_register(&boot_test_driver);
+	ret = bus_register_notifier(&platform_bus_type, &test_bus_notifier);
 	if (ret)
 		return ret;
+	ret = platform_driver_register(&boot_test_driver);
+	if (ret) {
+		bus_unregister_notifier(&platform_bus_type, &test_bus_notifier);
+		return ret;
+	}
+	pr_info("A5 diagnostic overlay apply begin\n");
 	ret = of_overlay_fdt_apply(a5_boot_test_overlay,
 				  sizeof(a5_boot_test_overlay), &overlay_id, NULL);
+	pr_info("A5 diagnostic overlay apply end ret=%d bound=%u\n", ret, READ_ONCE(bound_seen));
 	if (ret) {
 		if (pinned)
 			return 0;
 		if (overlay_id > 0)
 			of_overlay_remove(&overlay_id);
 		platform_driver_unregister(&boot_test_driver);
+		bus_unregister_notifier(&platform_bus_type, &test_bus_notifier);
 	}
 	return ret;
 }
 
 static void __exit boot_test_exit(void)
 {
-	of_overlay_remove(&overlay_id);
+	int ret;
+
+	pr_info("A5 diagnostic module exit begin\n");
+	ret = of_overlay_remove(&overlay_id);
+	pr_info("A5 diagnostic overlay remove ret=%d\n", ret);
 	platform_driver_unregister(&boot_test_driver);
+	bus_unregister_notifier(&platform_bus_type, &test_bus_notifier);
+	pr_info("A5 diagnostic module exit end\n");
 }
 
 module_init(boot_test_init);

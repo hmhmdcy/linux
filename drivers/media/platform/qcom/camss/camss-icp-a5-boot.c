@@ -348,6 +348,8 @@ static int quiesce_locked(struct camss_a5 *a5)
 		if (a5->initialized) {
 			a5->pc_error = send_command(a5, SYS_PC_PREP, PC_DONE);
 			if (!a5->pc_error)
+				dev_info(a5->dev, "A5 SYS_PC_PREP acknowledged\n");
+			if (!a5->pc_error)
 				a5->pc_error = readl_poll_timeout(base + A5_STATUS, value,
 							 value & A5_WFI, 1000, 300000);
 		}
@@ -571,6 +573,8 @@ int camss_a5_ping(struct camss_a5 *a5, u64 cookie)
 	}
 	a5->ping_cookie = cookie;
 	ret = send_command(a5, SYS_PING, PING_ACK);
+	if (!ret)
+		dev_info(a5->dev, "A5 SYS_PING acknowledged\n");
 done:
 	mutex_unlock(&a5->lock);
 	return ret;
