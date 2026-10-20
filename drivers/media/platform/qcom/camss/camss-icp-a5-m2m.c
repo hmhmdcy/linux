@@ -48,7 +48,7 @@ struct camss_a5_m2m {
 	struct list_head contexts;
 	u32 users;
 	bool running, fatal, power_pin, removing, mc_registered, media_registered;
-	u64 jobs, completed, failed, starts, stops;
+	u64 jobs, completed, cancelled, failed, starts, stops;
 };
 
 static struct ipe_context *file_context(struct file *file)
@@ -262,7 +262,9 @@ finish:
 		ret = end_ret;
 	if (!ret && READ_ONCE(ctx->aborting))
 		ret = -ECANCELED;
-	if (ret)
+	if (ret == -ECANCELED)
+		dev->cancelled++;
+	else if (ret)
 		dev->failed++;
 	else
 		dev->completed++;
@@ -741,11 +743,12 @@ ssize_t camss_a5_m2m_status(struct camss_a5_m2m *dev, char *buffer, size_t size)
 	ret = scnprintf(buffer, size,
 		"{\"registered\":true,\"users\":%u,\"running\":%s,\"fatal\":%s,"
 		"\"pinned\":%s,\"orphans\":%u,\"jobs\":%llu,\"completed\":%llu,"
-		"\"failed\":%llu,\"starts\":%llu,\"stops\":%llu}\n",
+		"\"cancelled\":%llu,\"failed\":%llu,\"starts\":%llu,\"stops\":%llu}\n",
 		dev->users, dev->running ? "true" : "false", dev->fatal ? "true" : "false",
 		dev->power_pin ? "true" : "false", orphans,
 		(unsigned long long)dev->jobs, (unsigned long long)dev->completed,
-		(unsigned long long)dev->failed, (unsigned long long)dev->starts,
+		(unsigned long long)dev->cancelled, (unsigned long long)dev->failed,
+		(unsigned long long)dev->starts,
 		(unsigned long long)dev->stops);
 	mutex_unlock(&dev->hw_lock);
 	mutex_unlock(&dev->video_lock);
