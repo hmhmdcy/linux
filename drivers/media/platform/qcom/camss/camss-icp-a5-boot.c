@@ -1344,12 +1344,15 @@ static bool transfer_released(struct camss_a5 *a5)
 static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *session,
 			     const struct camss_a5_ipe_job *job,
 			     const struct camss_a5_ipe_cc *cc,
+			     const struct camss_a5_ipe_colour *chain,
 			     enum camss_a5_ipe_result *result)
 {
 	struct camss_a5_ipe_frame frame = {};
 	struct camss_a5_ipe_cc colour;
+	struct camss_a5_ipe_colour configuration;
 	u8 colour_command[CAMSS_A5_IPE_CC_COMMAND_BYTES];
-	u32 iq_bytes = cc ? CAMSS_A5_IPE_CC_IQ_BYTES : CAMSS_A5_IPE_IQ_BYTES;
+	u32 iq_bytes = chain ? CAMSS_A5_IPE_COLOUR_IQ_BYTES :
+		cc ? CAMSS_A5_IPE_CC_IQ_BYTES : CAMSS_A5_IPE_IQ_BYTES;
 	u8 packet[40] = {};
 	u64 input_bytes, output_bytes, parcel;
 	u32 stripe_bytes, iq_offset, scratch_offset, bl_offset;
@@ -1375,6 +1378,16 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 	}
 	/* Only a configured, coherent engine may reject a job locally. */
 	local_ready = true;
+	if (cc && chain) {
+		ret = -EINVAL;
+		goto done;
+	}
+	if (chain) {
+		configuration = *chain;
+		ret = camss_a5_ipe_colour_check(&configuration);
+		if (ret)
+			goto done;
+	}
 	if (cc) {
 		colour = *cc;
 		ret = camss_a5_ipe_cc_encode(colour_command, sizeof(colour_command), &colour);
@@ -1439,7 +1452,10 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 						 job->max_cores, &stripe_bytes);
 	if (ret)
 		goto release;
-	if (cc)
+	if (chain)
+		ret = camss_a5_ipe_encode_colour_iq(a5->request.cpu + iq_offset, iq_bytes,
+						  REQUEST_IOVA + iq_offset, &configuration);
+	else if (cc)
 		ret = camss_a5_ipe_encode_cc_iq(a5->request.cpu + iq_offset, iq_bytes,
 					      REQUEST_IOVA + iq_offset, &colour);
 	else
@@ -1466,7 +1482,12 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 					 &session->io, &frame);
 	if (ret)
 		goto release;
-	if (cc) {
+	if (chain) {
+		put_unaligned_le32(REQUEST_IOVA + iq_offset + CAMSS_A5_IPE_COLOUR_ARRAY_OFFSET,
+				   a5->request.cpu + 40);
+		put_unaligned_le32(CAMSS_A5_IPE_COLOUR_PRE_OFFSET, a5->request.cpu + 44);
+		put_unaligned_le32(CAMSS_A5_IPE_COLOUR_POST_OFFSET, a5->request.cpu + 48);
+	} else if (cc) {
 		put_unaligned_le32(REQUEST_IOVA + iq_offset + CAMSS_A5_IPE_CC_ARRAY_OFFSET,
 				   a5->request.cpu + 40);
 		put_unaligned_le32(CAMSS_A5_IPE_CC_POST_OFFSET, a5->request.cpu + 48);
@@ -1540,7 +1561,7 @@ int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *sessio
 			  const struct camss_a5_ipe_job *job,
 			  enum camss_a5_ipe_result *result)
 {
-	return run_colour_status(a5, session, job, NULL, result);
+	return run_colour_status(a5, session, job, NULL, NULL, result);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run_status);
 
@@ -1550,9 +1571,19 @@ int camss_a5_ipe_run_colour_status(struct camss_a5 *a5,
 				 const struct camss_a5_ipe_cc *cc,
 				 enum camss_a5_ipe_result *result)
 {
-	return run_colour_status(a5, session, job, cc, result);
+	return run_colour_status(a5, session, job, cc, NULL, result);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run_colour_status);
+
+int camss_a5_ipe_run_colour_chain_status(struct camss_a5 *a5,
+				       struct camss_a5_session *session,
+				       const struct camss_a5_ipe_job *job,
+				       const struct camss_a5_ipe_colour *colour,
+				       enum camss_a5_ipe_result *result)
+{
+	return run_colour_status(a5, session, job, NULL, colour, result);
+}
+EXPORT_SYMBOL_GPL(camss_a5_ipe_run_colour_chain_status);
 
 /* Preserve existing in-kernel callers and their conservative errno contract. */
 int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,

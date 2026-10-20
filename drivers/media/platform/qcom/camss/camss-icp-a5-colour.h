@@ -28,4 +28,50 @@ int camss_a5_ipe_cc_encode(void *destination, u32 bytes,
 int camss_a5_ipe_encode_cc_iq(void *destination, u32 bytes, u32 iq_iova,
 			    const struct camss_a5_ipe_cc *cc);
 
+/* Quantized target IPE component transform; matrix Q10, signed13.
+ * Subtract is signed11; additive offsets and clamps are unsigned10.
+ */
+struct camss_a5_ipe_cst {
+	s16 matrix[9];
+	s16 subtract[3];
+	u16 offset[3];
+	u16 minimum[3];
+	u16 maximum[3];
+};
+
+/* Target native CV leaf order, verified through its deserializer and Execute.
+ * Coefficients are signed12/Q8; offsets have signed11 numerical range.
+ * Chroma pairs are ap/am, bp/bm, cp/cm, dp/dm; cb/cr offsets follow packet order.
+ */
+struct camss_a5_ipe_cv {
+	s16 luma[3];
+	s16 y_offset;
+	s16 chroma[8];
+	s16 offset[2];
+};
+
+#define CAMSS_A5_IPE_COLOUR_CST 1U
+#define CAMSS_A5_IPE_COLOUR_CC 2U
+#define CAMSS_A5_IPE_COLOUR_CV 4U
+#define CAMSS_A5_IPE_COLOUR_MODULES 7U
+
+struct camss_a5_ipe_colour {
+	u32 modules;
+	struct camss_a5_ipe_cst cst;
+	struct camss_a5_ipe_cc cc;
+	struct camss_a5_ipe_cv cv;
+};
+
+#define CAMSS_A5_IPE_COLOUR_ARRAY_OFFSET 2592U
+#define CAMSS_A5_IPE_COLOUR_PRE_OFFSET 32U
+#define CAMSS_A5_IPE_COLOUR_POST_OFFSET 64U
+#define CAMSS_A5_IPE_CST_PACKET_OFFSET 2720U
+#define CAMSS_A5_IPE_COLOUR_CC_PACKET_OFFSET 2776U
+#define CAMSS_A5_IPE_CV_PACKET_OFFSET 2820U
+#define CAMSS_A5_IPE_COLOUR_IQ_BYTES 2860U
+
+int camss_a5_ipe_colour_check(const struct camss_a5_ipe_colour *colour);
+int camss_a5_ipe_encode_colour_iq(void *destination, u32 bytes, u32 iq_iova,
+				const struct camss_a5_ipe_colour *colour);
+
 #endif

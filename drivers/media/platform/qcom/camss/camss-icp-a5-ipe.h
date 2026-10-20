@@ -69,6 +69,14 @@ int camss_a5_ipe_run_colour_status(struct camss_a5 *a5,
 				 const struct camss_a5_ipe_job *job,
 				 const struct camss_a5_ipe_cc *cc,
 				 enum camss_a5_ipe_result *result);
+/* Optional typed pre/post conversion and CCM; NULL retains the old bypass.
+ * Enabled modules are copied/validated before allocation or firmware MAP.
+ */
+int camss_a5_ipe_run_colour_chain_status(struct camss_a5 *a5,
+				       struct camss_a5_session *session,
+				       const struct camss_a5_ipe_job *job,
+				       const struct camss_a5_ipe_colour *colour,
+				       enum camss_a5_ipe_result *result);
 int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 		     const struct camss_a5_ipe_job *job);
 
