@@ -340,18 +340,20 @@ static int prepare_memory(struct camss_a5 *a5, const struct firmware *firmware)
 static int quiesce_locked(struct camss_a5 *a5)
 {
 	void __iomem *base = a5->resources.sierra;
+	bool cooperative = false;
 	u32 value;
 	int ret;
 
 	hrtimer_cancel(&a5->boot_timer);
 	if (a5->cpu_enabled) {
-		if (a5->initialized) {
+		if (a5->initialized && a5->irq_enabled) {
 			a5->pc_error = send_command(a5, SYS_PC_PREP, PC_DONE);
 			if (!a5->pc_error)
 				dev_info(a5->dev, "A5 SYS_PC_PREP acknowledged\n");
 			if (!a5->pc_error)
 				a5->pc_error = readl_poll_timeout(base + A5_STATUS, value,
 							 value & A5_WFI, 1000, 300000);
+			cooperative = !a5->pc_error;
 		}
 		writel(0, base + A5_INT_ENABLE);
 		if (a5->irq_enabled) {
@@ -363,16 +365,29 @@ static int quiesce_locked(struct camss_a5 *a5)
 		value = readl(base + A5_RESET);
 		writel(value, base + A5_RESET);
 		writel(0, base + A5_INIT_REQUEST);
-		/* The block reset is owned exclusively. Retain all RAM and the
-		 * runtime-PM reference if it cannot quiesce a failed firmware.
+		/* Confirm the CPU enable and wake requests are actually cleared.
+		 * Normal firmware shutdown follows PC_PREP/WFI and the local CSR
+		 * sequence. Keep the global ICP/AHB block accessible until its DMA
+		 * aliases and clock/domain ownership have been retired.
 		 */
-		ret = reset_control_assert(a5->reset);
-		if (ret)
-			return ret;
-		a5->reset_asserted = true;
+		value = readl(base + A5_CONTROL);
+		if (value & (A5_ENABLE | A5_WAKE)) {
+			cooperative = false;
+			a5->pc_error = -EIO;
+		}
+		if (!cooperative) {
+			/* Failed/uninitialized firmware needs a forced reset. A reset
+			 * failure must retain the CPU, RAM and runtime-PM ownership.
+			 */
+			ret = reset_control_assert(a5->reset);
+			if (ret)
+				return ret;
+			a5->reset_asserted = true;
+		}
 		a5->cpu_enabled = false;
 		a5->initialized = false;
-		dev_info(a5->dev, "A5 stopped, block reset asserted; pc_error=%d\n", a5->pc_error);
+		dev_info(a5->dev, "A5 stopped, cooperative=%u block_reset=%u pc_error=%d\n",
+			 cooperative, a5->reset_asserted, a5->pc_error);
 	}
 	if (a5->irq_enabled) {
 		disable_irq(a5->irq);
@@ -599,14 +614,13 @@ EXPORT_SYMBOL_GPL(camss_a5_runtime_resume);
 
 int camss_a5_runtime_suspend(struct camss_a5 *a5)
 {
-	int ret;
-
 	if (a5->cpu_enabled)
 		return -EBUSY;
-	ret = reset_control_assert(a5->reset);
-	if (ret)
-		return ret;
-	a5->reset_asserted = true;
+	/* A cooperative stop has already disabled A5 through its local CSR.
+	 * Do not assert the global ICP/AHB reset in the normal PM path.
+	 * A forced stop has asserted it already; resume releases it before
+	 * enabling any clocks. The next explicit start owns the reset cycle.
+	 */
 	return camss_a5_resources_suspend(&a5->resources);
 }
 EXPORT_SYMBOL_GPL(camss_a5_runtime_suspend);
