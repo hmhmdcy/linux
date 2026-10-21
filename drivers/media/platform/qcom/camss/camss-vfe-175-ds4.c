@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* SM8150 first 4:1 YUV downsampler and PD10 packer register composition. */
 #include <linux/bitfield.h>
+#include <linux/bits.h>
 #include <linux/errno.h>
 #include <linux/string.h>
 
