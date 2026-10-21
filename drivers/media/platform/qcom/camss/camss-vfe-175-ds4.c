@@ -185,9 +185,12 @@ void vfe_175_ds4_start(struct vfe_device *vfe, struct vfe_output *output)
 	const struct v4l2_pix_format_mplane *full =
 		&output->line->output[0].video_out.active_fmt.fmt.pix_mp;
 	u32 height = pix->height / 2, stride = pix->plane_fmt[0].bytesperline;
+	struct camss_pd10_layout layout;
 	u32 value;
 
 	/* The caller validated geometry and queued addresses before enabling. */
+	if (WARN_ON(camss_format_pd10_layout(pix->width, pix->height, &layout)))
+		return;
 	ds4_write_filter(vfe, output->line);
 	ds4_update_bits(vfe, 0xd84, 0x3fff3fff, full->height - 1);
 	ds4_update_bits(vfe, 0xd88, 0x1fff1fff, full->width - 1);
@@ -206,7 +209,7 @@ void vfe_175_ds4_start(struct vfe_device *vfe, struct vfe_output *output)
 	writel_relaxed(height, vfe->base + 0x2720);
 	writel_relaxed(0, vfe->base + 0x2724);
 	writel_relaxed(stride, vfe->base + 0x2728);
-	writel_relaxed(stride * height, vfe->base + 0x2758);
+	writel_relaxed(layout.bytes, vfe->base + 0x2758);
 	writel_relaxed(0xf, vfe->base + 0x275c);
 	writel_relaxed(0, vfe->base + 0x2748);
 	writel_relaxed(1, vfe->base + 0x274c);
