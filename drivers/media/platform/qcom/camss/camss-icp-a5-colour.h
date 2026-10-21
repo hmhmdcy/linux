@@ -3,6 +3,7 @@
 #define CAMSS_A5_IPE_COLOUR_H
 
 #include <linux/types.h>
+#include <linux/qcom-ipe-a5.h>
 
 #define CAMSS_A5_IPE_CC_COMMAND_BYTES 44
 #define CAMSS_A5_IPE_CC_ARRAY_OFFSET 2592U
@@ -148,5 +149,7 @@ int camss_a5_ipe_encode_ltm_iq(void *destination, u32 bytes, u32 iq_iova,
 			     const struct camss_a5_ipe_colour *colour,
 			     const struct camss_a5_ipe_gamma *gamma,
 			     const struct camss_a5_ipe_ltm *ltm);
+
+int camss_a5_ipe_frame_params_check(const struct qcom_ipe_a5_frame_params *params);
 
 #endif
