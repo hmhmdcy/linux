@@ -285,7 +285,7 @@ static void device_work(struct work_struct *work)
 	struct camss_a5_ipe_job job = {
 		.input_bytes = ctx->format.plane_fmt[0].sizeimage,
 		.output_bytes = ctx->format.plane_fmt[0].sizeimage,
-		.bl_bytes = 512 * 1024, .max_cores = 2,
+		.bl_bytes = 512 * 1024, .max_cores = ctx->coarse ? 1 : 2,
 		.target_time_ns = 100000000,
 	};
 	enum camss_a5_ipe_result result = CAMSS_A5_IPE_RESET_REQUIRED;

@@ -1658,6 +1658,10 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 	} else {
 		a5->frames_completed++;
 		dma_rmb();
+		if (coarse)
+			dev_info(a5->dev, "A5 IPE PD10 completed cores=%u LTM=%08x/%08x\n",
+				 job->max_cores, readl(a5->resources.ipe[0] + 0x5c60),
+				 readl(a5->resources.ipe[1] + 0x5c60));
 		if (coarse && coarse->scratch_output)
 			memcpy(coarse->scratch_output, a5->request.cpu + scratch_offset,
 			       session->scratch_bytes);

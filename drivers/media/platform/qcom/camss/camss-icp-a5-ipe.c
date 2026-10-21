@@ -441,7 +441,7 @@ int camss_a5_ipe_ltm_pd10_size(const struct camss_a5_ipe_io *io, u32 cores,
 	if (ret)
 		return ret;
 	if (io->input.width != 640 || io->input.height != 480 ||
-	    io->output_port != 8 || io->input.uv_swap || cores != 2)
+	    io->output_port != 8 || io->input.uv_swap || (cores != 1 && cores != 2))
 		return -EOPNOTSUPP;
 	if (ltm->data_collection && !(ltm->image_processing && ltm->mask_filter))
 		return -EOPNOTSUPP;
