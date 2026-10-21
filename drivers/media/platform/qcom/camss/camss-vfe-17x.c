@@ -364,7 +364,7 @@ static irqreturn_t vfe_isr(int irq, void *dev)
 	writel_relaxed(CMD_GLOBAL_CLEAR, vfe->base + VFE_IRQ_CMD);
 	writel_relaxed(1, vfe->base + VFE_BUS_IRQ_CLEAR_GLOBAL);
 
-	if (vfe->pixel175.ds4_running &&
+	if (vfe->pixel175.ds4_running && (status0 & STATUS_0_CAMIF_SOF) &&
 	    vfe->line[VFE_LINE_PIX].output[0].sof_sequence < 4)
 		dev_info(vfe->camss->dev,
 			 "DS4 bringup irq top=%08x/%08x bus=%08x/%08x/%08x zoom=%08x wm=%08x/%08x/%08x\n",
