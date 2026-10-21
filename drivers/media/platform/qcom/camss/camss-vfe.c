@@ -1009,6 +1009,14 @@ static int vfe_enable_one_output(struct vfe_line *line, struct vfe_output *outpu
 		if (!output->buf[i])
 			break;
 		output->gen2.active_num++;
+	}
+
+	/* A disabled WM does not accept its address FIFO. Queue ownership is
+	 * established first; arm the WM, fill its FIFO, then commit once. */
+	if (output->video_out.auxiliary && output->gen2.active_num)
+		ops->vfe_output_start(vfe, output);
+
+	for (i = 0; i < output->gen2.active_num; i++) {
 		if (ops->vfe_output_update)
 			ops->vfe_output_update(vfe, output, output->buf[i]);
 		else
@@ -1018,10 +1026,8 @@ static int vfe_enable_one_output(struct vfe_line *line, struct vfe_output *outpu
 			ops->reg_update(vfe, line->id);
 	}
 
-	if (output->video_out.auxiliary && output->gen2.active_num) {
-		ops->vfe_output_start(vfe, output);
+	if (output->video_out.auxiliary && output->gen2.active_num)
 		ops->reg_update(vfe, line->id);
-	}
 	return 0;
 }
 
@@ -1158,13 +1164,13 @@ int vfe_queue_buffer_v2(struct camss_video *vid,
 	if (output->state == VFE_OUTPUT_ON &&
 	    output->gen2.active_num < 2) {
 		output->buf[output->gen2.active_num++] = buf;
+		if (vid->auxiliary && output->gen2.active_num == 1)
+			ops->vfe_output_start(vfe, output);
 		if (ops->vfe_output_update)
 			ops->vfe_output_update(vfe, output, buf);
 		else
 			ops->vfe_wm_update(vfe, output->wm[0].bus_client,
 					   buf->addr[0], line);
-		if (vid->auxiliary && output->gen2.active_num == 1)
-			ops->vfe_output_start(vfe, output);
 		ops->reg_update(vfe, line->id);
 	} else {
 		vfe_buf_add_pending(output, buf);

@@ -188,7 +188,7 @@ void vfe_175_ds4_start(struct vfe_device *vfe, struct vfe_output *output)
 	struct camss_pd10_layout layout;
 	u32 value;
 
-	/* The caller validated geometry and queued addresses before enabling. */
+	/* Buffer ownership is established before arming the address FIFO. */
 	if (WARN_ON(camss_format_pd10_layout(pix->width, pix->height, &layout)))
 		return;
 	ds4_write_filter(vfe, output->line);
