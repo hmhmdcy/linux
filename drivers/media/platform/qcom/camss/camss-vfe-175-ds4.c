@@ -200,6 +200,9 @@ void vfe_175_ds4_start(struct vfe_device *vfe, struct vfe_output *output)
 	ds4_update_bits(vfe, 0xd9c, 0x3f, 6);
 	ds4_update_bits(vfe, 0xdb8, 0x3ff003ff, 1023U << 20);
 	ds4_update_bits(vfe, 0xdbc, 0x3f, 7);
+	/* The node aggregator owns local crop, round and clamp enables. */
+	ds4_update_bits(vfe, 0xd8c, 0xe00, 0xe00);
+	ds4_update_bits(vfe, 0xdac, 0xe00, 0xe00);
 	ds4_update_bits(vfe, 0x200c, BIT(5), BIT(5));
 	ds4_update_bits(vfe, 0x2084, BIT(5), BIT(5));
 	/* Independent composite group: starving DS4 cannot hold up FULL. */
@@ -238,5 +241,7 @@ void vfe_175_ds4_stop(struct vfe_device *vfe, struct vfe_output *output)
 	readl_relaxed(vfe->base + 0x2708);
 	ds4_update_bits(vfe, 0x2014, BIT(5), 0);
 	ds4_update_bits(vfe, 0x4c, 0x5500, 0);
+	ds4_update_bits(vfe, 0xd8c, 0xe00, 0);
+	ds4_update_bits(vfe, 0xdac, 0xe00, 0);
 	vfe->pixel175.ds4_running = false;
 }
