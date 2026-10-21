@@ -263,23 +263,51 @@ static void bypass_module_1d(u8 *data, u32 length, u32 grid, u32 first,
 	}
 }
 
-int camss_a5_ipe_encode_bypass_striping(void *buffer, u32 capacity,
-				      const struct camss_a5_ipe_io *io,
-				      u32 cores, u32 *used)
+int camss_a5_ipe_ltm_size(const struct camss_a5_ipe_io *io, u32 cores,
+			 const struct camss_a5_ipe_ltm_geometry *ltm, u32 *bytes)
+{
+	u32 checked, stripes;
+	int ret;
+
+	if (!ltm || !bytes)
+		return -EINVAL;
+	ret = camss_a5_ipe_bypass_size(io, cores, &checked);
+	if (ret)
+		return ret;
+	if (!(ltm->image_processing && ltm->mask_filter)) {
+		*bytes = checked;
+		return 0;
+	}
+	stripes = (io->input.width + 323) / 324;
+	stripes = ((stripes + cores - 1) / cores) * cores;
+	*bytes = 2268 + 624 * stripes;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(camss_a5_ipe_ltm_size);
+
+static int ipe_encode_striping(void *buffer, u32 capacity,
+			       const struct camss_a5_ipe_io *io, u32 cores,
+			       const struct camss_a5_ipe_ltm_geometry *ltm,
+			       u32 *used)
 {
 	struct camss_a5_ipe_partition parts[26];
 	u8 *output = buffer;
+	bool mask;
 	u32 bytes, count, i, width, height, port;
 	int ret;
 
-	if (!output || !used)
+	if (!output || !used || !ltm)
 		return -EINVAL;
-	ret = camss_a5_ipe_bypass_size(io, cores, &bytes);
+	mask = ltm->image_processing && ltm->mask_filter;
+	ret = camss_a5_ipe_ltm_size(io, cores, ltm, &bytes);
 	if (ret)
 		return ret;
 	if (capacity < bytes)
 		return -ENOSPC;
-	ret = camss_a5_ipe_bypass_partitions(io->input.width, cores, parts,
+	ret = mask ?
+		camss_a5_ipe_ltm_partitions(io->input.width, cores, parts,
+					 ARRAY_SIZE(parts), &count) :
+		camss_a5_ipe_bypass_partitions(io->input.width, cores, parts,
 					  ARRAY_SIZE(parts), &count);
 	if (ret)
 		return ret;
@@ -294,12 +322,20 @@ int camss_a5_ipe_encode_bypass_striping(void *buffer, u32 capacity,
 			 0, port, false, 0, 0);
 	put_unaligned_le16(height - 1, output + 376);
 	put_unaligned_le16(height - 1, output + (port == 9 ? 396 : 392));
+	/* DC full-pass input inherits IP only with a valid quarter pass. */
+	put_unaligned_le32(ltm->data_collection && ltm->image_processing &&
+			   (((width + 7) / 4) & ~1U) >= 72 &&
+			   (((height + 7) / 4) & ~1U) >= 54, output + 416);
 	put_unaligned_le32(22, output + 424);
 	put_unaligned_le16(count, output + 428);
 	put_unaligned_le32(2248, output + 432);
 	for (i = 0; i < count; i++) {
 		const struct camss_a5_ipe_partition *p = parts + i;
 		u8 *stripe = output + 2268 + 624 * i;
+		u32 first = mask && p->output_first >= 2 ?
+			p->output_first - 2 : p->output_first;
+		u32 last = mask && p->output_last + 2U < width ?
+			p->output_last + 2 : p->output_last;
 		u32 length = p->output_last - p->output_first + 1;
 		s32 x = (s32)p->output_first - (s32)(width / 2);
 		s32 y = -(s32)(height / 2);
@@ -312,6 +348,17 @@ int camss_a5_ipe_encode_bypass_striping(void *buffer, u32 capacity,
 				   ((p->output_last == width - 1) << 8), stripe + 44);
 		bypass_module_1d(stripe + 48, length, (max(width, 320U) + 11) / 12,
 				 p->output_first, port, true, p->fetch_first, p->fetch_last);
+		if (mask) {
+			u32 grid = (max(width, 320U) + 11) / 12;
+			u32 phase = first % grid;
+
+			put_unaligned_le16(last - first, stripe + 48 + 34);
+			put_unaligned_le16(first / grid, stripe + 48 + 88);
+			put_unaligned_le16(phase, stripe + 48 + 90);
+			put_unaligned_le16(phase * (65536 / grid), stripe + 48 + 92);
+			put_unaligned_le16(first - p->fetch_first, stripe + 48 + 276);
+			put_unaligned_le16(last - p->fetch_first, stripe + 48 + 278);
+		}
 		put_unaligned_le16(p->output_first, stripe + 568);
 		put_unaligned_le32(x * x + y * y, stripe + 576);
 		put_unaligned_le16(x, stripe + 580);
@@ -324,4 +371,22 @@ int camss_a5_ipe_encode_bypass_striping(void *buffer, u32 capacity,
 	*used = bytes;
 	return 0;
 }
+
+int camss_a5_ipe_encode_bypass_striping(void *buffer, u32 capacity,
+				      const struct camss_a5_ipe_io *io,
+				      u32 cores, u32 *used)
+{
+	const struct camss_a5_ipe_ltm_geometry disabled = {};
+
+	return ipe_encode_striping(buffer, capacity, io, cores, &disabled, used);
+}
 EXPORT_SYMBOL_GPL(camss_a5_ipe_encode_bypass_striping);
+
+int camss_a5_ipe_encode_ltm_striping(void *buffer, u32 capacity,
+				   const struct camss_a5_ipe_io *io, u32 cores,
+				   const struct camss_a5_ipe_ltm_geometry *ltm,
+				   u32 *used)
+{
+	return ipe_encode_striping(buffer, capacity, io, cores, ltm, used);
+}
+EXPORT_SYMBOL_GPL(camss_a5_ipe_encode_ltm_striping);

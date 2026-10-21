@@ -103,7 +103,7 @@ struct camss_a5_ipe_partition {
 int camss_a5_ipe_bypass_partitions(u32 width, u32 cores,
 				 struct camss_a5_ipe_partition *output,
 				 u32 capacity, u32 *count);
-/* LTM image-processing partition ranges only. Callers still need the LTM
+/* LTM image-processing plus mask-filter partition ranges only. Callers still need the LTM
  * processing crops, grid and firmware blob before submitting enabled LTM.
  */
 int camss_a5_ipe_ltm_partitions(u32 width, u32 cores,
@@ -120,5 +120,20 @@ int camss_a5_ipe_bypass_size(const struct camss_a5_ipe_io *io, u32 cores,
 int camss_a5_ipe_encode_bypass_striping(void *buffer, u32 capacity,
 				      const struct camss_a5_ipe_io *io,
 				      u32 cores, u32 *used);
+
+/* Full-frame 1:1 geometry only; IQ/LUT ownership and runtime submission
+ * remain the caller's responsibility. This does not activate LTM.
+ */
+struct camss_a5_ipe_ltm_geometry {
+	bool data_collection;
+	bool image_processing;
+	bool mask_filter;
+};
+int camss_a5_ipe_ltm_size(const struct camss_a5_ipe_io *io, u32 cores,
+			 const struct camss_a5_ipe_ltm_geometry *ltm, u32 *bytes);
+int camss_a5_ipe_encode_ltm_striping(void *buffer, u32 capacity,
+				 const struct camss_a5_ipe_io *io, u32 cores,
+				 const struct camss_a5_ipe_ltm_geometry *ltm,
+				 u32 *used);
 
 #endif
