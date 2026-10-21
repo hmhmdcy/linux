@@ -222,7 +222,15 @@ void vfe_175_ds4_start(struct vfe_device *vfe, struct vfe_output *output)
 	wmb();
 	/* Disable unused DS4 postcrop enables, preserve FULL and DS16. */
 	value = readl_relaxed(vfe->base + 0x4c);
-	writel_relaxed((value & ~0xa0U) | 0x5500, vfe->base + 0x4c);
+	value &= ~0xa0U;
+	/* The current FULL backend rejects ROI. For complete 8-pixel groups,
+	 * this window covers the whole scaler output and can be bypassed.
+	 * Keep the existing crop path for partial groups until verified. */
+	if (!((full->width | full->height) & 7))
+		value = (value & ~BIT(8)) | 0x5400;
+	else
+		value |= 0x5500;
+	writel_relaxed(value, vfe->base + 0x4c);
 	writel_relaxed(1, vfe->base + 0x2708);
 	vfe->pixel175.ds4_running = true;
 }
