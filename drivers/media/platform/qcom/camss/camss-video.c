@@ -655,6 +655,9 @@ static int video_enum_fmt(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 		return -EINVAL;
 
 	f->pixelformat = video->formats[i].pixelformat;
+	if (f->pixelformat == V4L2_PIX_FMT_QCOM_PD10_LOCAL)
+		strscpy(f->description, "Qualcomm PD10 (local)",
+			sizeof(f->description));
 
 	return 0;
 }
