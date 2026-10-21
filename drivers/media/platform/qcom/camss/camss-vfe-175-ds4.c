@@ -195,7 +195,8 @@ void vfe_175_ds4_start(struct vfe_device *vfe, struct vfe_output *output)
 	ds4_update_bits(vfe, 0xd84, 0x3fff3fff, full->height - 1);
 	ds4_update_bits(vfe, 0xd88, 0x1fff1fff, full->width - 1);
 	ds4_update_bits(vfe, 0xda4, 0x3fff3fff, full->height / 2 - 1);
-	ds4_update_bits(vfe, 0xda8, 0x1fff1fff, full->width / 2 - 1);
+	/* Chroma crop counts interleaved components, not CbCr pairs. */
+	ds4_update_bits(vfe, 0xda8, 0x1fff1fff, full->width - 1);
 	ds4_update_bits(vfe, 0xd98, 0x3ff003ff, 1023U << 20);
 	ds4_update_bits(vfe, 0xd9c, 0x3f, 6);
 	ds4_update_bits(vfe, 0xdb8, 0x3ff003ff, 1023U << 20);
@@ -222,15 +223,7 @@ void vfe_175_ds4_start(struct vfe_device *vfe, struct vfe_output *output)
 	wmb();
 	/* Disable unused DS4 postcrop enables, preserve FULL and DS16. */
 	value = readl_relaxed(vfe->base + 0x4c);
-	value &= ~0xa0U;
-	/* The current FULL backend rejects ROI. For complete 8-pixel groups,
-	 * this window covers the whole scaler output and can be bypassed.
-	 * Keep the existing crop path for partial groups until verified. */
-	if (!((full->width | full->height) & 7))
-		value = (value & ~BIT(8)) | 0x5400;
-	else
-		value |= 0x5500;
-	writel_relaxed(value, vfe->base + 0x4c);
+	writel_relaxed((value & ~0xa0U) | 0x5500, vfe->base + 0x4c);
 	writel_relaxed(1, vfe->base + 0x2708);
 	vfe->pixel175.ds4_running = true;
 }
