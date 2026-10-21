@@ -997,10 +997,12 @@ static int vfe_enable_one_output(struct vfe_line *line, struct vfe_output *outpu
 	output->wait_reg_update = 0;
 	reinit_completion(&output->reg_update);
 
-	if (!output->video_out.auxiliary && ops->vfe_output_start)
-		ops->vfe_output_start(vfe, output);
-	else
-		ops->vfe_wm_start(vfe, output->wm[0].bus_client, line);
+	if (!output->video_out.auxiliary) {
+		if (ops->vfe_output_start)
+			ops->vfe_output_start(vfe, output);
+		else
+			ops->vfe_wm_start(vfe, output->wm[0].bus_client, line);
+	}
 
 	for (i = 0; i < CAMSS_INIT_BUF_COUNT; i++) {
 		output->buf[i] = vfe_buf_get_pending(output);
