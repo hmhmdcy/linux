@@ -53,6 +53,7 @@ struct camss_a5_session {
 	u32 handle, type;
 	struct camss_a5_ipe_io io;
 	u32 scratch_bytes;
+	struct camss_a5_pd10_layout coarse;
 	bool configured;
 };
 
@@ -63,7 +64,7 @@ struct camss_a5 {
 	phys_addr_t firmware_physical;
 	struct camss_a5_fw_memory firmware, shared, heap, config;
 	struct camss_a5_fw_memory request, image_input, image_output;
-	struct camss_a5_dma_image dma_input, dma_output;
+	struct camss_a5_dma_image dma_input, dma_output, dma_coarse;
 	struct camss_a5_ring rings[CAMSS_A5_QUEUE_COUNT];
 	struct camss_a5_qtable *table;
 	struct completion response;
@@ -124,6 +125,10 @@ int camss_a5_ipe_destroy(struct camss_a5 *a5, struct camss_a5_session *session);
 int camss_a5_ipe_configure_nv12(struct camss_a5 *a5,
 			       struct camss_a5_session *session,
 			       const struct camss_a5_ipe_io *io);
+int camss_a5_ipe_configure_nv12_pd10(struct camss_a5 *a5,
+				    struct camss_a5_session *session,
+				    const struct camss_a5_ipe_io *io,
+				    const struct camss_a5_pd10_layout *coarse);
 bool camss_a5_backing_owned(const struct camss_a5 *a5);
 
 #endif

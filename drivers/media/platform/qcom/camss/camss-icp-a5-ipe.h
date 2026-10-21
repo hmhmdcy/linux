@@ -20,7 +20,7 @@ struct camss_a5_ipe_buffer {
  * content. Command arrays remain empty. No hardware frame is submitted here.
  */
 struct camss_a5_ipe_frame {
-	struct camss_a5_ipe_buffer striping, iq, scratch, bl, input, output;
+	struct camss_a5_ipe_buffer striping, iq, scratch, bl, input, output, coarse;
 	const void *striping_cpu;
 	u32 required_scratch_bytes, required_bl_bytes;
 	u32 request_id, max_cores, target_time_ns;
@@ -100,6 +100,26 @@ int camss_a5_ipe_run_ltm_status(struct camss_a5 *a5,
 			      const struct camss_a5_ipe_gamma *gamma,
 			      const struct camss_a5_ipe_ltm *ltm,
 			      enum camss_a5_ipe_result *result);
+/* Optional real PD10 input, matched to the configured FULL image by caller.
+ * CPU pixels and DMA-BUF imports are mutually exclusive. The core retains
+ * imported backing on uncertain DMA just like FULL input/output.
+ * Diagnostic scratch copy is returned only after successful completion.
+ */
+struct camss_a5_ipe_coarse_input {
+	const void *pixels;
+	struct dma_buf *dma;
+	u32 offset, bytes;
+	void *scratch_output;
+	u32 scratch_capacity;
+};
+int camss_a5_ipe_run_ltm_pd10_status(struct camss_a5 *a5,
+				   struct camss_a5_session *session,
+				   const struct camss_a5_ipe_job *job,
+				   const struct camss_a5_ipe_colour *colour,
+				   const struct camss_a5_ipe_gamma *gamma,
+				   const struct camss_a5_ipe_ltm *ltm,
+				   const struct camss_a5_ipe_coarse_input *coarse,
+				   enum camss_a5_ipe_result *result);
 int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 		     const struct camss_a5_ipe_job *job);
 
@@ -149,4 +169,12 @@ int camss_a5_ipe_encode_ltm_striping(void *buffer, u32 capacity,
 				 const struct camss_a5_ipe_ltm_geometry *ltm,
 				 u32 *used);
 
+int camss_a5_ipe_ltm_pd10_size(const struct camss_a5_ipe_io *io, u32 cores,
+			     const struct camss_a5_ipe_ltm_geometry *ltm,
+			     u32 *bytes);
+int camss_a5_ipe_encode_ltm_pd10_striping(void *buffer, u32 capacity,
+					const struct camss_a5_ipe_io *io,
+					u32 cores,
+					const struct camss_a5_ipe_ltm_geometry *ltm,
+					u32 *used);
 #endif

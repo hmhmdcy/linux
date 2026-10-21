@@ -462,9 +462,10 @@ static int config_region_locked(struct camss_a5 *a5,
 	return 0;
 }
 
-int camss_a5_ipe_configure_nv12(struct camss_a5 *a5,
-			       struct camss_a5_session *session,
-			       const struct camss_a5_ipe_io *io)
+static int configure_ipe_io(struct camss_a5 *a5,
+			    struct camss_a5_session *session,
+			    const struct camss_a5_ipe_io *io,
+			    const struct camss_a5_pd10_layout *coarse)
 {
 	u8 packet[40] = {};
 	int ret, unmap;
@@ -486,7 +487,7 @@ int camss_a5_ipe_configure_nv12(struct camss_a5 *a5,
 		ret = -EINVAL;
 		goto done;
 	}
-	ret = camss_a5_ipe_encode_io(a5->config.cpu, a5->config.bytes, io, NULL);
+	ret = camss_a5_ipe_encode_io(a5->config.cpu, a5->config.bytes, io, coarse);
 	if (ret)
 		goto done;
 	dma_wmb();
@@ -526,13 +527,31 @@ unmap:
 	}
 	if (!ret) {
 		session->io = *io;
+		session->coarse = coarse ? *coarse : (struct camss_a5_pd10_layout){};
 		session->configured = true;
 	}
 done:
 	mutex_unlock(&a5->lock);
 	return ret;
 }
+int camss_a5_ipe_configure_nv12(struct camss_a5 *a5,
+			       struct camss_a5_session *session,
+			       const struct camss_a5_ipe_io *io)
+{
+	return configure_ipe_io(a5, session, io, NULL);
+}
 EXPORT_SYMBOL_GPL(camss_a5_ipe_configure_nv12);
+
+int camss_a5_ipe_configure_nv12_pd10(struct camss_a5 *a5,
+				    struct camss_a5_session *session,
+				    const struct camss_a5_ipe_io *io,
+				    const struct camss_a5_pd10_layout *coarse)
+{
+	if (!coarse)
+		return -EINVAL;
+	return configure_ipe_io(a5, session, io, coarse);
+}
+EXPORT_SYMBOL_GPL(camss_a5_ipe_configure_nv12_pd10);
 
 int camss_a5_ipe_create(struct camss_a5 *a5, struct camss_a5_session *session,
 			 u32 handle_type)
@@ -637,6 +656,7 @@ static int ipe_destroy_locked(struct camss_a5 *a5,
 	session->type = 0;
 	session->configured = false;
 	session->scratch_bytes = 0;
+	memset(&session->coarse, 0, sizeof(session->coarse));
 	a5->session_count--;
 	a5->session_destroys++;
 	dev_info(a5->dev, "A5 IPE destroy acknowledged active=%u\n", a5->session_count);
@@ -667,6 +687,7 @@ static void invalidate_sessions(struct camss_a5 *a5)
 		session->type = 0;
 		session->configured = false;
 		session->scratch_bytes = 0;
+		memset(&session->coarse, 0, sizeof(session->coarse));
 	}
 	a5->session_count = 0;
 	a5->session_uncertain = false;
@@ -680,7 +701,7 @@ bool camss_a5_backing_owned(const struct camss_a5 *a5)
 {
 	return a5->firmware.cpu || a5->shared.cpu || a5->heap.cpu || a5->config.cpu ||
 	       a5->request.cpu || a5->image_input.cpu || a5->image_output.cpu ||
-	       a5->dma_input.buffer || a5->dma_output.buffer;
+	       a5->dma_input.buffer || a5->dma_output.buffer || a5->dma_coarse.buffer;
 }
 EXPORT_SYMBOL_GPL(camss_a5_backing_owned);
 
@@ -750,6 +771,9 @@ static int free_imported_images(struct camss_a5 *a5)
 
  if (a5->ipe_dma_pending || a5->request_fw_mapped)
   return -EBUSY;
+ ret = camss_a5_dma_image_release(&a5->dma_coarse);
+ if (ret)
+  return ret;
  ret = camss_a5_dma_image_release(&a5->dma_output);
  return ret ?: camss_a5_dma_image_release(&a5->dma_input);
 }
@@ -1365,7 +1389,7 @@ static bool transfer_released(struct camss_a5 *a5)
 	       !a5->request.cpu && !a5->request.mapped &&
 	       !a5->image_input.cpu && !a5->image_input.mapped &&
 	       !a5->image_output.cpu && !a5->image_output.mapped &&
-	       !a5->dma_input.buffer && !a5->dma_output.buffer;
+	       !a5->dma_input.buffer && !a5->dma_output.buffer && !a5->dma_coarse.buffer;
 }
 
 static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *session,
@@ -1374,6 +1398,7 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 			     const struct camss_a5_ipe_colour *chain,
 			     const struct camss_a5_ipe_gamma *gamma,
 			     const struct camss_a5_ipe_ltm *ltm,
+			     const struct camss_a5_ipe_coarse_input *coarse,
 			     enum camss_a5_ipe_result *result)
 {
 	struct camss_a5_ipe_frame frame = {};
@@ -1388,7 +1413,7 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 		cc ? CAMSS_A5_IPE_CC_IQ_BYTES : CAMSS_A5_IPE_IQ_BYTES;
 	u8 packet[40] = {};
 	u64 input_bytes, output_bytes, parcel;
-	u32 stripe_bytes, iq_offset, scratch_offset, bl_offset;
+	u32 stripe_bytes, iq_offset, scratch_offset, bl_offset, coarse_offset;
 	bool direct, local_ready = false, firmware_attempted = false;
 	int ret, cleanup = 0;
 
@@ -1462,7 +1487,18 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 		ret = -EINVAL;
 		goto done;
 	}
-	ret = ltm_copy ?
+	if (!!coarse != !!session->coarse.bytes ||
+	    (coarse && (!ltm_copy || coarse->bytes < session->coarse.bytes ||
+	     (direct && (!coarse->dma || coarse->pixels)) ||
+	     (!direct && (!coarse->pixels || coarse->dma || coarse->offset)) ||
+	     (coarse->scratch_output && coarse->scratch_capacity < session->scratch_bytes) ||
+	     (!coarse->scratch_output && coarse->scratch_capacity)))) {
+		ret = -EINVAL;
+		goto done;
+	}
+	ret = coarse ?
+		camss_a5_ipe_ltm_pd10_size(&session->io, job->max_cores, &geometry, &stripe_bytes) :
+		ltm_copy ?
 		camss_a5_ipe_ltm_size(&session->io, job->max_cores, &geometry, &stripe_bytes) :
 		camss_a5_ipe_bypass_size(&session->io, job->max_cores, &stripe_bytes);
 	if (ret)
@@ -1482,7 +1518,8 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 	iq_offset = PAGE_SIZE + PAGE_ALIGN(stripe_bytes);
 	scratch_offset = iq_offset + PAGE_ALIGN(iq_bytes);
 	bl_offset = scratch_offset + PAGE_ALIGN(session->scratch_bytes);
-	parcel = PAGE_ALIGN((u64)bl_offset + job->bl_bytes);
+	coarse_offset = PAGE_ALIGN((u64)bl_offset + job->bl_bytes);
+	parcel = coarse_offset + (coarse && !direct ? PAGE_ALIGN(session->coarse.bytes) : 0);
 	if (!session->scratch_bytes || parcel > REQUEST_MAX) {
 		ret = -EINVAL;
 		goto done;
@@ -1498,6 +1535,13 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 						     job->output_offset, output_bytes, DMA_FROM_DEVICE);
 		if (!ret)
 			ret = camss_a5_dma_images_disjoint(&a5->dma_input, &a5->dma_output);
+		if (!ret && coarse)
+			ret = camss_a5_dma_image_map(a5->dev, &a5->dma_coarse, coarse->dma,
+						     coarse->offset, session->coarse.bytes, DMA_TO_DEVICE);
+		if (!ret && coarse)
+			ret = camss_a5_dma_images_disjoint(&a5->dma_coarse, &a5->dma_input);
+		if (!ret && coarse)
+			ret = camss_a5_dma_images_disjoint(&a5->dma_coarse, &a5->dma_output);
 	} else {
 		ret = transfer_alloc(a5, &a5->image_input, IMAGE_INPUT_IOVA, PAGE_ALIGN(input_bytes));
 		if (!ret)
@@ -1505,7 +1549,10 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 	}
 	if (ret)
 		goto release;
-	if (ltm_copy)
+	if (coarse)
+		ret = camss_a5_ipe_encode_ltm_pd10_striping(a5->request.cpu + PAGE_SIZE,
+				stripe_bytes, &session->io, job->max_cores, &geometry, &stripe_bytes);
+	else if (ltm_copy)
 		ret = camss_a5_ipe_encode_ltm_striping(a5->request.cpu + PAGE_SIZE,
 						      stripe_bytes, &session->io,
 						      job->max_cores, &geometry, &stripe_bytes);
@@ -1537,6 +1584,14 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 	if (!direct) {
 		memcpy(a5->image_input.cpu, job->input, input_bytes);
 		memset(a5->image_output.cpu, 0xa5, output_bytes);
+	}
+	if (coarse) {
+		memset(a5->request.cpu + scratch_offset, 0xa7, session->scratch_bytes);
+		if (!direct)
+			memcpy(a5->request.cpu + coarse_offset, coarse->pixels, session->coarse.bytes);
+		frame.coarse = (struct camss_a5_ipe_buffer){
+			direct ? a5->dma_coarse.iova : REQUEST_IOVA + coarse_offset,
+			session->coarse.bytes };
 	}
 	frame.striping = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + PAGE_SIZE, stripe_bytes };
 	frame.iq = (struct camss_a5_ipe_buffer){ REQUEST_IOVA + iq_offset, iq_bytes };
@@ -1603,6 +1658,9 @@ static int run_colour_status(struct camss_a5 *a5, struct camss_a5_session *sessi
 	} else {
 		a5->frames_completed++;
 		dma_rmb();
+		if (coarse && coarse->scratch_output)
+			memcpy(coarse->scratch_output, a5->request.cpu + scratch_offset,
+			       session->scratch_bytes);
 		if (direct)
 			a5->direct_frames++;
 		else {
@@ -1640,7 +1698,7 @@ int camss_a5_ipe_run_status(struct camss_a5 *a5, struct camss_a5_session *sessio
 			  const struct camss_a5_ipe_job *job,
 			  enum camss_a5_ipe_result *result)
 {
-	return run_colour_status(a5, session, job, NULL, NULL, NULL, NULL, result);
+	return run_colour_status(a5, session, job, NULL, NULL, NULL, NULL, NULL, result);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run_status);
 
@@ -1650,7 +1708,7 @@ int camss_a5_ipe_run_colour_status(struct camss_a5 *a5,
 				 const struct camss_a5_ipe_cc *cc,
 				 enum camss_a5_ipe_result *result)
 {
-	return run_colour_status(a5, session, job, cc, NULL, NULL, NULL, result);
+	return run_colour_status(a5, session, job, cc, NULL, NULL, NULL, NULL, result);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run_colour_status);
 
@@ -1660,7 +1718,7 @@ int camss_a5_ipe_run_colour_chain_status(struct camss_a5 *a5,
 				       const struct camss_a5_ipe_colour *colour,
 				       enum camss_a5_ipe_result *result)
 {
-	return run_colour_status(a5, session, job, NULL, colour, NULL, NULL, result);
+	return run_colour_status(a5, session, job, NULL, colour, NULL, NULL, NULL, result);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run_colour_chain_status);
 
@@ -1671,7 +1729,7 @@ int camss_a5_ipe_run_gamma_status(struct camss_a5 *a5,
 				const struct camss_a5_ipe_gamma *gamma,
 				enum camss_a5_ipe_result *result)
 {
-	return run_colour_status(a5, session, job, NULL, colour, gamma, NULL, result);
+	return run_colour_status(a5, session, job, NULL, colour, gamma, NULL, NULL, result);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run_gamma_status);
 
@@ -1683,7 +1741,7 @@ int camss_a5_ipe_run_ltm_status(struct camss_a5 *a5,
 			      const struct camss_a5_ipe_ltm *ltm,
 			      enum camss_a5_ipe_result *result)
 {
-	return run_colour_status(a5, session, job, NULL, colour, gamma, ltm, result);
+	return run_colour_status(a5, session, job, NULL, colour, gamma, ltm, NULL, result);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run_ltm_status);
 
@@ -1694,3 +1752,21 @@ int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 	return camss_a5_ipe_run_status(a5, session, job, NULL);
 }
 EXPORT_SYMBOL_GPL(camss_a5_ipe_run);
+
+int camss_a5_ipe_run_ltm_pd10_status(struct camss_a5 *a5,
+				   struct camss_a5_session *session,
+				   const struct camss_a5_ipe_job *job,
+				   const struct camss_a5_ipe_colour *colour,
+				   const struct camss_a5_ipe_gamma *gamma,
+				   const struct camss_a5_ipe_ltm *ltm,
+				   const struct camss_a5_ipe_coarse_input *coarse,
+				   enum camss_a5_ipe_result *result)
+{
+	if (!coarse) {
+		if (result)
+			*result = CAMSS_A5_IPE_RESET_REQUIRED;
+		return -EINVAL;
+	}
+	return run_colour_status(a5, session, job, NULL, colour, gamma, ltm, coarse, result);
+}
+EXPORT_SYMBOL_GPL(camss_a5_ipe_run_ltm_pd10_status);
