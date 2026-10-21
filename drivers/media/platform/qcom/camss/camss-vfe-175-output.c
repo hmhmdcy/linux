@@ -123,7 +123,8 @@ int vfe_175_validate_output(const struct vfe_output *output)
 
 		if (params->pad != MSM_VFE_PAD_SINK_PARAMS || params->wm_num)
 			return -EINVAL;
-	} else if (output->line->num_outputs == 3) {
+	} else if (output->line->num_outputs == 3 ||
+		   output->line->num_outputs == 4) {
 		const struct vfe_output *params = &output->line->output[1];
 
 		if (params->pad != MSM_VFE_PAD_SINK_PARAMS || params->wm_num ||
@@ -133,6 +134,13 @@ int vfe_175_validate_output(const struct vfe_output *output)
 		return -EINVAL;
 	}
 
+	if (output->line->num_outputs == 4) {
+		const struct vfe_output *ds4 = &output->line->output[3];
+
+		if (ds4->pad != MSM_VFE_PAD_SRC_DS4 || ds4->wm_num != 1 ||
+		    ds4->wm[0].bus_client != 5 || ds4->wm[0].plane || ds4->comp_group != 1)
+			return -EINVAL;
+	}
 	if (pix->pixelformat != V4L2_PIX_FMT_NV12 || pix->num_planes != 1 ||
 	    !pix->width || !pix->height || (pix->width & 1) || (pix->height & 1) ||
 	    pix->width > VFE_175_FULL_MAX_WIDTH ||

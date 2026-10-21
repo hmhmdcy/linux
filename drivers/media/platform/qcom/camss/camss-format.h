@@ -49,6 +49,12 @@ struct camss_format_info {
 	unsigned int bpp[3];
 };
 
+struct camss_pd10_layout {
+	u32 stride, slice_height, bytes;
+};
+int camss_format_pd10_layout(u32 width, u32 height,
+			     struct camss_pd10_layout *layout);
+
 struct camss_formats {
 	unsigned int nformats;
 	const struct camss_format_info *formats;

@@ -19,6 +19,7 @@
 #include "camss-vfe-175-camif.h"
 #include "camss-vfe-175-lsc.h"
 #include "camss-vfe-175-output.h"
+#include "camss-vfe-175-ds4.h"
 
 #define VFE_GLOBAL_RESET_CMD			(0x018)
 #define		GLOBAL_RESET_CMD_CORE		BIT(0)
@@ -641,6 +642,8 @@ static int vfe_prepare_dma_175(struct camss_video *video,
 	if (!output->line->is_pix)
 		return 0;
 
+	if (output->pad == MSM_VFE_PAD_SRC_DS4)
+		return vfe_175_ds4_validate_buffer(output, buf);
 	return vfe_175_validate_buffer(output, buf);
 }
 
@@ -664,8 +667,8 @@ static void vfe_subdev_init_175(struct device *dev, struct vfe_device *vfe)
 		vfe_add_yuv(&pix->output[0], 3, 4, 0);
 		vfe_add_params(&pix->output[1], 0);
 		vfe_175_stats_init_output(&pix->output[2]);
-		/* Keep shared pad indices; undeclared DS outputs reject formats. */
-		vfe_set_pix(pix, 3);
+		vfe_add_ds(&pix->output[3], MSM_VFE_PAD_SRC_DS4, 5, 1);
+		vfe_set_pix(pix, 4);
 	}
 }
 
@@ -697,6 +700,10 @@ static int vfe_output_prepare_175(struct vfe_device *vfe,
 			return ret;
 		return s->width >= 4 && s->height >= 2 ? 0 : -EINVAL;
 	}
+	if (output->pad == MSM_VFE_PAD_SRC_DS4) {
+		ret = vfe_175_ds4_validate_output(output);
+		return ret ?: (vfe->pixel175.ds4_configured ? 0 : -ENODATA);
+	}
 	if (output->line->is_pix)
 		return vfe_175_validate_output(output);
 
@@ -708,6 +715,8 @@ static void vfe_output_start_175(struct vfe_device *vfe,
 {
 	if (output->pad == MSM_VFE_PAD_SRC_STATS)
 		vfe_175_stats_start(vfe, output);
+	else if (output->pad == MSM_VFE_PAD_SRC_DS4)
+		vfe_175_ds4_start(vfe, output);
 	else if (output->line->is_pix)
 		vfe_175_full_start(vfe, output);
 	else
@@ -719,6 +728,8 @@ static void vfe_output_stop_175(struct vfe_device *vfe,
 {
 	if (output->pad == MSM_VFE_PAD_SRC_STATS)
 		vfe_175_stats_stop(vfe, output);
+	else if (output->pad == MSM_VFE_PAD_SRC_DS4)
+		vfe_175_ds4_stop(vfe, output);
 	else if (output->line->is_pix) {
 		vfe_175_full_stop(vfe, output);
 		if (output->pad == MSM_VFE_PAD_SRC)
@@ -733,6 +744,8 @@ static void vfe_output_update_175(struct vfe_device *vfe,
 {
 	if (output->pad == MSM_VFE_PAD_SRC_STATS)
 		vfe_175_stats_update(vfe, output);
+	else if (output->pad == MSM_VFE_PAD_SRC_DS4)
+		vfe_175_ds4_update(vfe, output, buf);
 	else if (output->line->is_pix)
 		vfe_175_full_update(vfe, output, buf);
 	else
@@ -740,11 +753,20 @@ static void vfe_output_update_175(struct vfe_device *vfe,
 			      output->line);
 }
 
+static int vfe_175_validate_all_params(struct vfe_line *line,
+				       const struct v4l2_isp_buffer *params)
+{
+	int ret = vfe_175_params_validate_line(line, params);
+
+	return ret ?: vfe_175_ds4_validate_line(line, params);
+}
+
 /* SM8150 full IFE: shared RDI transport, matched CAMIF and FULL DMA. */
 const struct vfe_hw_ops vfe_ops_175 = {
 	.vfe_stats_fill = vfe_175_stats_fill,
-	.params_max_payload = CAMSS_PARAMS_IFE_GAMMA_MAX_PAYLOAD,
-	.params_validate = vfe_175_params_validate_line,
+	.params_max_payload = CAMSS_PARAMS_IFE_GAMMA_MAX_PAYLOAD +
+			      sizeof(struct camss_params_ife_ds4),
+	.params_validate = vfe_175_validate_all_params,
 	.params_info = vfe_175_params_info,
 	.params_num_types = ARRAY_SIZE(vfe_175_params_info),
 	.vfe_params_apply = vfe_175_params_apply,

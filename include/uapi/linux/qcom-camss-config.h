@@ -9,6 +9,7 @@
 #define _UAPI_LINUX_QCOM_CAMSS_CONFIG_H
 
 #include <linux/types.h>
+#include <linux/videodev2.h>
 #include <linux/media/v4l2-isp.h>
 
 /**
@@ -39,7 +40,21 @@ enum camss_params_block_type {
 	CAMSS_PARAMS_AEC_BHIST = 5,
 	CAMSS_PARAMS_LSC = 6,
 	CAMSS_PARAMS_IFE_GAMMA = 7,
+	CAMSS_PARAMS_IFE_DS4 = 8,
 };
+
+/* Local experimental identifier, not reserved upstream. Single-plane PD10:
+ * each 2x2 YUV420 block occupies eight bytes. SM8150 rows are aligned to
+ * 192 bytes and the packed row count to four; bpl describes packed rows. */
+#define V4L2_PIX_FMT_QCOM_PD10_LOCAL v4l2_fourcc('Q', 'P', '1', '0')
+
+/* DS4 configuration only. Flags and reserved must be zero. Stream lifetime
+ * controls the hardware enable; coefficients come from selected tuning. */
+struct camss_params_ife_ds4 {
+	struct v4l2_isp_block_header header;
+	__u16 coefficient[3];
+	__u16 reserved;
+} __attribute__((aligned(8)));
 
 /* Number of entries in each gamma channel LUT. */
 #define CAMSS_GAMMA_LUT_SIZE	256

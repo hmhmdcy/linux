@@ -16,6 +16,7 @@
 #include "camss-vfe-175-ccm.h"
 #include "camss-vfe-175-demux.h"
 #include "camss-vfe-175-mnds.h"
+#include "camss-vfe-175-ds4.h"
 
 #define VFE_175_LENS_ENABLE		0x040
 #define VFE_175_BLC_ENABLE		BIT(11)
@@ -145,10 +146,14 @@ static int vfe_175_params_unsupported(struct device *dev,
 	return -EINVAL;
 }
 
-const struct v4l2_isp_params_block_type_info vfe_175_params_info[8] = {
+const struct v4l2_isp_params_block_type_info vfe_175_params_info[9] = {
 	[0] = {
 		.size = sizeof(struct v4l2_isp_block_header),
 		.block_validate = vfe_175_params_unsupported,
+	},
+	[CAMSS_PARAMS_IFE_DS4] = {
+		.size = sizeof(struct camss_params_ife_ds4),
+		.block_validate = vfe_175_ds4_validate,
 	},
 	[CAMSS_PARAMS_WB_GAIN] = {
 		.size = sizeof(struct camss_params_wb_gain),
@@ -272,6 +277,11 @@ void vfe_175_params_apply(struct vfe_device *vfe, struct vfe_line *line,
 			(const void *)&params->data[offset];
 		const struct camss_params_wb_gain *wb;
 
+		if (block->type == CAMSS_PARAMS_IFE_DS4) {
+			vfe_175_ds4_params(vfe, line, block);
+			offset += block->size;
+			continue;
+		}
 		if (block->type == CAMSS_PARAMS_IFE_GAMMA) {
 			vfe_175_gamma_params(vfe, block);
 			offset += block->size;

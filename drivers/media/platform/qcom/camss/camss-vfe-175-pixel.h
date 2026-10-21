@@ -19,12 +19,14 @@ struct vfe_175_pixel_state {
 	u16 black_level;
 	bool wb_enabled;
 	bool gamma_enabled;
+	bool ds4_configured, ds4_running;
+	u16 ds4_coefficient[3];
 	bool lsc_enabled;
 	u8 lsc_bank;
 	struct vfe_175_stats_state stats;
 };
 
-extern const struct v4l2_isp_params_block_type_info vfe_175_params_info[8];
+extern const struct v4l2_isp_params_block_type_info vfe_175_params_info[9];
 int vfe_175_pixel_prepare(struct vfe_line *line);
 void vfe_175_pixel_stop(struct vfe_device *vfe);
 void vfe_175_params_apply(struct vfe_device *vfe, struct vfe_line *line,

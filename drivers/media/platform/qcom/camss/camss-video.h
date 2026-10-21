@@ -60,6 +60,8 @@ struct camss_video {
 	struct mutex q_lock;
 	unsigned int bpl_alignment;
 	unsigned int line_based;
+	/* Auxiliary image DMA follows the primary line without restarting it. */
+	bool auxiliary;
 	/* Optional per-output bounds and dimension steps; NULL keeps legacy limits. */
 	const struct v4l2_frmsize_stepwise *frame_sizes;
 	const struct camss_format_info *formats;

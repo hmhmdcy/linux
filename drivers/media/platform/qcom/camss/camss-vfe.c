@@ -26,6 +26,7 @@
 #include <linux/qcom-camss-config.h>
 
 #include "camss-vfe.h"
+#include "camss-vfe-175-ds4.h"
 #include "camss.h"
 
 #define MSM_VFE_NAME "msm_vfe"
@@ -845,6 +846,10 @@ static struct camss_buffer *vfe_output_done(struct vfe_device *vfe,
 		ops->reg_update(vfe, line->id);
 	} else {
 		output->gen2.active_num--;
+		if (output->video_out.auxiliary && !output->gen2.active_num) {
+			ops->vfe_output_stop(vfe, output);
+			ops->reg_update(vfe, line->id);
+		}
 	}
 
 	return ready_buf;
@@ -992,7 +997,7 @@ static int vfe_enable_one_output(struct vfe_line *line, struct vfe_output *outpu
 	output->wait_reg_update = 0;
 	reinit_completion(&output->reg_update);
 
-	if (ops->vfe_output_start)
+	if (!output->video_out.auxiliary && ops->vfe_output_start)
 		ops->vfe_output_start(vfe, output);
 	else
 		ops->vfe_wm_start(vfe, output->wm[0].bus_client, line);
@@ -1007,9 +1012,14 @@ static int vfe_enable_one_output(struct vfe_line *line, struct vfe_output *outpu
 		else
 			ops->vfe_wm_update(vfe, output->wm[0].bus_client,
 					   output->buf[i]->addr[0], line);
-		ops->reg_update(vfe, line->id);
+		if (!output->video_out.auxiliary)
+			ops->reg_update(vfe, line->id);
 	}
 
+	if (output->video_out.auxiliary && output->gen2.active_num) {
+		ops->vfe_output_start(vfe, output);
+		ops->reg_update(vfe, line->id);
+	}
 	return 0;
 }
 
@@ -1022,7 +1032,8 @@ int vfe_start_metadata_v2(struct camss_video *vid)
 	unsigned long flags;
 	int ret = 0;
 
-	if (output->pad != MSM_VFE_PAD_SRC_STATS || !output->wm_num)
+	if ((!vid->auxiliary && output->pad != MSM_VFE_PAD_SRC_STATS) ||
+	    !output->wm_num)
 		return 0;
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
@@ -1047,7 +1058,8 @@ void vfe_stop_metadata_v2(struct camss_video *vid)
 	unsigned long flags;
 	unsigned int i;
 
-	if (output->pad != MSM_VFE_PAD_SRC_STATS || !output->wm_num)
+	if ((!vid->auxiliary && output->pad != MSM_VFE_PAD_SRC_STATS) ||
+	    !output->wm_num)
 		return;
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
@@ -1149,6 +1161,8 @@ int vfe_queue_buffer_v2(struct camss_video *vid,
 		else
 			ops->vfe_wm_update(vfe, output->wm[0].bus_client,
 					   buf->addr[0], line);
+		if (vid->auxiliary && output->gen2.active_num == 1)
+			ops->vfe_output_start(vfe, output);
 		ops->reg_update(vfe, line->id);
 	} else {
 		vfe_buf_add_pending(output, buf);
@@ -1391,7 +1405,8 @@ static void vfe_disable_output(struct vfe_line *line)
 			continue;
 
 		vfe_stop_one_output(line, output);
-		if (o && output->video_out.type == V4L2_BUF_TYPE_META_CAPTURE)
+		if (o && (output->video_out.type == V4L2_BUF_TYPE_META_CAPTURE ||
+			  output->video_out.auxiliary))
 			vfe_requeue_active_buffers(output);
 		else
 			output->gen2.active_num = 0;
@@ -2031,6 +2046,9 @@ static void vfe_try_format(struct vfe_line *line,
 			h = (h / 4) & ~1u;
 		}
 		*fmt = *src;
+		if (pad == MSM_VFE_PAD_SRC_DS4 &&
+		    to_vfe(line)->camss->res->version == CAMSS_8150)
+			fmt->code = MEDIA_BUS_FMT_UYYVYY10_0_5X30;
 		fmt->width = w;
 		fmt->height = h;
 
@@ -2171,6 +2189,9 @@ static int vfe_enum_mbus_code(struct v4l2_subdev *sd,
 			return -EINVAL;
 		code->code = __vfe_get_format(line, sd_state, MSM_VFE_PAD_SRC,
 					      code->which)->code;
+		if (code->pad == MSM_VFE_PAD_SRC_DS4 &&
+		    to_vfe(line)->camss->res->version == CAMSS_8150)
+			code->code = MEDIA_BUS_FMT_UYYVYY10_0_5X30;
 		return 0;
 	case MSM_VFE_PAD_SRC_STATS:
 	case MSM_VFE_PAD_SINK_PARAMS:
@@ -2970,6 +2991,15 @@ static int vfe_register_meta_nodes(struct vfe_device *vfe,
 				v4l2_isp_buffer_size(vfe->res->hw_ops->params_max_payload ?:
 					     CAMSS_PARAMS_IFE_MAX_PAYLOAD);
 			suffix = "params";
+		} else if (output->pad == MSM_VFE_PAD_SRC_DS4 &&
+			   vfe->res->hw_ops == &vfe_ops_175) {
+			video->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+			video->auxiliary = true;
+			video->formats = vfe_formats_ds4_175.formats;
+			video->nformats = vfe_formats_ds4_175.nformats;
+			video->frame_sizes = &vfe_frame_sizes_ds4_175;
+			video->bpl_alignment = 192;
+			suffix = "ds4";
 		} else {
 			continue;
 		}

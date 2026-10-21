@@ -10,6 +10,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/qcom-camss-config.h>
 #include <media/media-entity.h>
 #include <media/v4l2-dev.h>
 #include <media/v4l2-device.h>
@@ -19,6 +20,7 @@
 #include <media/videobuf2-vmalloc.h>
 
 #include "camss-video.h"
+#include "camss-format.h"
 #include "camss.h"
 
 #define CAMSS_FRAME_MIN_WIDTH		1
@@ -65,6 +67,16 @@ static int video_mbus_to_pix_mp(const struct v4l2_mbus_framefmt *mbus,
 		pix->plane_fmt[i].sizeimage = pix->height /
 				f->vsub[i].numerator * f->vsub[i].denominator *
 				bytesperline;
+	}
+
+	if (pix->pixelformat == V4L2_PIX_FMT_QCOM_PD10_LOCAL) {
+		struct camss_pd10_layout layout;
+		int ret = camss_format_pd10_layout(pix->width, pix->height, &layout);
+
+		if (ret)
+			return ret;
+		pix->plane_fmt[0].bytesperline = layout.stride;
+		pix->plane_fmt[0].sizeimage = layout.bytes;
 	}
 
 	return 0;
@@ -338,6 +350,16 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	struct v4l2_subdev *subdev;
 	int ret;
 
+	if (video->auxiliary) {
+		ret = video_check_format(video);
+		if (!ret)
+			ret = video->ops->start_metadata ?
+				video->ops->start_metadata(video) : -EINVAL;
+		if (ret)
+			video->ops->flush_buffers(video, VB2_BUF_STATE_QUEUED);
+		return ret;
+	}
+
 	ret = video_device_pipeline_alloc_start(vdev);
 	if (ret < 0) {
 		dev_err(video->camss->dev, "Failed to start media pipeline: %d\n", ret);
@@ -397,6 +419,13 @@ static void video_stop_streaming(struct vb2_queue *q)
 	struct media_pad *pad = media_pad_remote_pad_first(&vdev->entity.pads[0]);
 	struct v4l2_subdev *subdev = pad && is_media_entity_v4l2_subdev(pad->entity)
 				   ? media_entity_to_v4l2_subdev(pad->entity) : NULL;
+
+	if (video->auxiliary) {
+		if (video->ops->stop_metadata)
+			video->ops->stop_metadata(video);
+		video->ops->flush_buffers(video, VB2_BUF_STATE_ERROR);
+		return;
+	}
 
 	if (subdev && v4l2_subdev_has_op(subdev, pad, disable_streams)) {
 		int ret = v4l2_subdev_disable_streams(subdev, pad->index, BIT_ULL(0));
@@ -761,6 +790,16 @@ static int __video_try_fmt(struct camss_video *video, struct v4l2_format *f)
 			if (p->sizeimage < sizeimage[i])
 				p->sizeimage = sizeimage[i];
 		}
+
+	if (pix_mp->pixelformat == V4L2_PIX_FMT_QCOM_PD10_LOCAL) {
+		struct camss_pd10_layout layout;
+		int ret = camss_format_pd10_layout(pix_mp->width, pix_mp->height, &layout);
+
+		if (ret)
+			return ret;
+		pix_mp->plane_fmt[0].bytesperline = layout.stride;
+		pix_mp->plane_fmt[0].sizeimage = layout.bytes;
+	}
 
 	return 0;
 }
