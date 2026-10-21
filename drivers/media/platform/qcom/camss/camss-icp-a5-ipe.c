@@ -322,10 +322,10 @@ static int ipe_encode_striping(void *buffer, u32 capacity,
 			 0, port, false, 0, 0);
 	put_unaligned_le16(height - 1, output + 376);
 	put_unaligned_le16(height - 1, output + (port == 9 ? 396 : 392));
-	/* DC full-pass input inherits IP only with a valid quarter pass. */
-	put_unaligned_le32(ltm->data_collection && ltm->image_processing &&
-			   (((width + 7) / 4) & ~1U) >= 72 &&
-			   (((height + 7) / 4) & ~1U) >= 54, output + 416);
+	/* This full-pass field drives the physical IP_EN bit, not DC.
+	 * Honour the explicit request; DC/coarse-pass policy belongs upstream.
+	 */
+	put_unaligned_le32(ltm->image_processing, output + 416);
 	put_unaligned_le32(22, output + 424);
 	put_unaligned_le16(count, output + 428);
 	put_unaligned_le32(2248, output + 432);
