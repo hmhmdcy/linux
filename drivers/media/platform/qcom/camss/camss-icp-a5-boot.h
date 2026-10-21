@@ -28,10 +28,24 @@ struct camss_a5_nv12_layout {
 	bool uv_swap;
 };
 
+/* Canonical native quarter-resolution PD10 backing, not generated pixels. */
+struct camss_a5_pd10_layout {
+	u32 width, height, stride, slice_height, bytes;
+};
+int camss_a5_ipe_pd10_quarter(const struct camss_a5_nv12_layout *full,
+			    struct camss_a5_pd10_layout *result);
+
 struct camss_a5_ipe_io {
 	struct camss_a5_nv12_layout input, output;
 	u32 output_port; /* 8: display, 9: video */
 };
+
+/* Optional input-DS4 description only. The submitting path must additionally
+ * own/populate backing, configure the session, and supply multipass geometry.
+ * NULL coarse preserves the ordinary NV12/NV21 IO bytes. */
+int camss_a5_ipe_encode_io(void *destination, u32 bytes,
+			 const struct camss_a5_ipe_io *io,
+			 const struct camss_a5_pd10_layout *coarse);
 
 struct camss_a5_session {
 	struct list_head node;
