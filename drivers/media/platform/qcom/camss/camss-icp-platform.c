@@ -93,8 +93,8 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 		 a5->image_output.mapped,
 		a5->ipe_dma_pending ? "true" : "false",
 		a5->request_fw_mapped ? "true" : "false",
-		!!a5->dma_input.buffer + !!a5->dma_output.buffer,
-		(unsigned long long)a5->dma_input.bytes + a5->dma_output.bytes,
+		!!a5->dma_input.buffer + !!a5->dma_output.buffer + !!a5->dma_coarse.buffer,
+		(unsigned long long)a5->dma_input.bytes + a5->dma_output.bytes + a5->dma_coarse.bytes,
 		a5->init_response, a5->init_done ? "true" : "false",
 		a5->pc_done ? "true" : "false", a5->session_creates,
 		a5->session_destroys, a5->session_peak, a5->frames_completed,
@@ -126,7 +126,27 @@ static DEVICE_ATTR_WO(cleanup);
 static struct attribute *icp_attrs[] = {
 	&dev_attr_m2m_status.attr, &dev_attr_state.attr, &dev_attr_cleanup.attr, NULL
 };
-ATTRIBUTE_GROUPS(icp);
+static ssize_t ltm_scratch_read(struct file *file, struct kobject *kobject,
+				const struct bin_attribute *attribute,
+				char *buffer, loff_t offset, size_t count)
+{
+	struct camss_icp *icp = dev_get_drvdata(kobj_to_dev(kobject));
+	ssize_t ret;
+
+	mutex_lock(&icp->lock);
+	ret = camss_a5_m2m_dc_snapshot(icp->m2m, buffer, offset, count);
+	mutex_unlock(&icp->lock);
+	return ret;
+}
+static const struct bin_attribute bin_attr_ltm_scratch =
+	__BIN_ATTR(ltm_scratch, 0400, ltm_scratch_read, NULL, 0x40000 + 16);
+static const struct bin_attribute *const icp_bin_attrs[] = {
+	&bin_attr_ltm_scratch, NULL
+};
+static const struct attribute_group icp_group = {
+	.attrs = icp_attrs, .bin_attrs = icp_bin_attrs,
+};
+static const struct attribute_group *icp_groups[] = { &icp_group, NULL };
 
 static int icp_runtime_resume(struct device *dev)
 {

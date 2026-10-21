@@ -2,7 +2,10 @@
 /* SM8150 A5/IPE V4L2 queue adapter. Geometry/IQ/DMA stay in the SoC core.
  * Unity-scale NV12/NV21 uses core-owned DMA-BUF imports; no image CPU copy.
  */
+#include <linux/crc32.h>
 #include <linux/dma-buf.h>
+#include <linux/unaligned.h>
+#include <linux/vmalloc.h>
 #include <linux/firmware.h>
 #include <linux/fcntl.h>
 #include <linux/kernel.h>
@@ -36,7 +39,7 @@ struct ipe_context {
 	bool params_written;
 	struct list_head node;
 	u32 sequence;
-	bool aborting, closed;
+	bool aborting, closed, coarse;
 };
 
 struct camss_a5_m2m {
@@ -58,6 +61,8 @@ struct camss_a5_m2m {
 	int first_error;
 	bool running, fatal, power_pin, removing, mc_registered, media_registered;
 	u64 jobs, completed, direct_completed, cancelled, failed, starts, stops;
+	u8 *dc_snapshot;
+	u32 dc_snapshot_bytes;
 };
 
 
@@ -101,6 +106,7 @@ static const struct v4l2_ctrl_config frame_params_config = {
 
 static int frame_params_run(struct ipe_context *ctx,
 			    const struct camss_a5_ipe_job *job,
+			    const struct camss_a5_ipe_coarse_input *coarse,
 			    const struct qcom_ipe_a5_frame_params *params,
 			    enum camss_a5_ipe_result *result)
 {
@@ -108,11 +114,16 @@ static int frame_params_run(struct ipe_context *ctx,
 	const struct camss_a5_ipe_gamma *gamma;
 	const struct camss_a5_ipe_ltm *ltm;
 
+	if (coarse && (!params || !params->version || !(params->flags & QCOM_IPE_A5_LTM)))
+		return -EINVAL;
 	if (!params || !params->version)
 		return camss_a5_ipe_run_status(ctx->dev->a5, &ctx->session, job, result);
 	colour = (const void *)&params->colour;
 	gamma = params->flags & QCOM_IPE_A5_GAMMA ? (const void *)&params->gamma : NULL;
 	ltm = params->flags & QCOM_IPE_A5_LTM ? (const void *)&params->ltm : NULL;
+	if (coarse)
+		return camss_a5_ipe_run_ltm_pd10_status(ctx->dev->a5, &ctx->session, job,
+						      colour, gamma, ltm, coarse, result);
 	return camss_a5_ipe_run_ltm_status(ctx->dev->a5, &ctx->session, job,
 					 colour, gamma, ltm, result);
 }
@@ -212,9 +223,9 @@ fail:
  * imported buffers already carry a DMA-BUF. The core takes another reference
  * before starting DMA, including on uncertain completion/reset failure.
  */
-static struct dma_buf *image_buffer(struct vb2_buffer *vb)
+static struct dma_buf *image_buffer(struct vb2_buffer *vb, unsigned int plane)
 {
- struct dma_buf *buffer = vb->planes[0].dbuf;
+ struct dma_buf *buffer = vb->planes[plane].dbuf;
 
  if (buffer) {
   get_dma_buf(buffer);
@@ -222,7 +233,7 @@ static struct dma_buf *image_buffer(struct vb2_buffer *vb)
  }
  if (vb->memory != V4L2_MEMORY_MMAP || !vb->vb2_queue->mem_ops->get_dmabuf)
   return ERR_PTR(-EINVAL);
- buffer = vb->vb2_queue->mem_ops->get_dmabuf(vb, vb->planes[0].mem_priv, O_RDWR);
+ buffer = vb->vb2_queue->mem_ops->get_dmabuf(vb, vb->planes[plane].mem_priv, O_RDWR);
  return buffer ?: ERR_PTR(-ENOMEM);
 }
 
@@ -235,6 +246,7 @@ static int ensure_session(struct ipe_context *ctx)
 			   f->height, f->pixelformat == V4L2_PIX_FMT_NV21 },
 		.output_port = 8,
 	};
+	struct camss_a5_pd10_layout coarse;
 	int ret;
 
 	ret = start_backend(dev);
@@ -244,8 +256,13 @@ static int ensure_session(struct ipe_context *ctx)
 		return 0;
 	io.output = io.input;
 	ret = camss_a5_ipe_create(dev->a5, &ctx->session, CAMSS_A5_IPE_RT);
-	if (!ret)
+	if (!ret && ctx->coarse) {
+		ret = camss_a5_ipe_pd10_quarter(&io.input, &coarse);
+		if (!ret)
+			ret = camss_a5_ipe_configure_nv12_pd10(dev->a5, &ctx->session, &io, &coarse);
+	} else if (!ret) {
 		ret = camss_a5_ipe_configure_nv12(dev->a5, &ctx->session, &io);
+	}
 	return ret;
 }
 
@@ -254,7 +271,7 @@ static bool image_transfer_owned(const struct camss_a5 *a5)
 {
 	return a5->ipe_dma_pending || a5->request_fw_mapped ||
 		a5->request.cpu || a5->image_input.cpu || a5->image_output.cpu ||
-		a5->dma_input.buffer || a5->dma_output.buffer;
+		a5->dma_input.buffer || a5->dma_output.buffer || a5->dma_coarse.buffer;
 }
 
 static void device_work(struct work_struct *work)
@@ -263,7 +280,8 @@ static void device_work(struct work_struct *work)
 	struct camss_a5_m2m *dev = ctx->dev;
 	struct vb2_v4l2_buffer *src = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
 	struct vb2_v4l2_buffer *dst = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
-	struct dma_buf *input = NULL, *output = NULL;
+	struct dma_buf *input = NULL, *output = NULL, *coarse_buffer = NULL;
+	struct camss_a5_ipe_coarse_input coarse = {};
 	struct camss_a5_ipe_job job = {
 		.input_bytes = ctx->format.plane_fmt[0].sizeimage,
 		.output_bytes = ctx->format.plane_fmt[0].sizeimage,
@@ -313,17 +331,37 @@ static void device_work(struct work_struct *work)
 		if (!ret) ret = camss_a5_ipe_frame_params_check(params);
 		if (ret) goto finish;
 	}
-	input = image_buffer(&src->vb2_buf);
+	input = image_buffer(&src->vb2_buf, 0);
 	if (IS_ERR(input)) {
 		ret = PTR_ERR(input);
 		input = NULL;
 		goto finish;
 	}
-	output = image_buffer(&dst->vb2_buf);
+	output = image_buffer(&dst->vb2_buf, 0);
 	if (IS_ERR(output)) {
 		ret = PTR_ERR(output);
 		output = NULL;
 		goto finish;
+	}
+	if (ctx->coarse) {
+		coarse_buffer = image_buffer(&src->vb2_buf, 1);
+		if (IS_ERR(coarse_buffer)) {
+			ret = PTR_ERR(coarse_buffer);
+			coarse_buffer = NULL;
+			goto finish;
+		}
+		if (!dev->dc_snapshot)
+			dev->dc_snapshot = kvzalloc(0x40000 + 16, GFP_KERNEL);
+		if (!dev->dc_snapshot) {
+			ret = -ENOMEM;
+			goto finish;
+		}
+		dev->dc_snapshot_bytes = 0;
+		coarse.dma = coarse_buffer;
+		coarse.offset = src->vb2_buf.planes[1].data_offset;
+		coarse.bytes = 46080;
+		coarse.scratch_output = dev->dc_snapshot + 16;
+		coarse.scratch_capacity = 0x40000;
 	}
 	job.input_dma = input;
 	job.output_dma = output;
@@ -333,7 +371,19 @@ static void device_work(struct work_struct *work)
 	if (ret)
 		goto hw_fail;
 	job.request_id = ctx->sequence + 1;
-	ret = frame_params_run(ctx, &job, params, &result);
+	ret = frame_params_run(ctx, &job, ctx->coarse ? &coarse : NULL, params, &result);
+	if (!ret && ctx->coarse) {
+		u32 i, changed = 0, bytes = ctx->session.scratch_bytes;
+		u8 *data = dev->dc_snapshot + 16;
+
+		for (i = 0; i < bytes; i++)
+			changed += data[i] != 0xa7;
+		put_unaligned_le32(job.request_id, dev->dc_snapshot);
+		put_unaligned_le32(bytes, dev->dc_snapshot + 4);
+		put_unaligned_le32(crc32_le(~0U, data, bytes) ^ ~0U, dev->dc_snapshot + 8);
+		put_unaligned_le32(changed, dev->dc_snapshot + 12);
+		dev->dc_snapshot_bytes = bytes + 16;
+	}
 	/* A proven local rejection errors this queue, not the shared engine. */
 	if (!ret || result == CAMSS_A5_IPE_REJECTED)
 		goto finish;
@@ -345,6 +395,8 @@ hw_fail:
 	 */
 	stop_backend(dev);
 finish:
+	if (coarse_buffer)
+		dma_buf_put(coarse_buffer);
 	kfree(params);
 	if (output)
 		dma_buf_put(output);
@@ -399,39 +451,78 @@ static void job_abort(void *private)
 	WRITE_ONCE(ctx->aborting, true);
 }
 
+/* Common geometry is stored as NV12. Only the OUTPUT queue gains PD10. */
+static int queue_format(struct ipe_context *ctx, unsigned int type,
+			struct v4l2_pix_format_mplane *format)
+{
+	struct camss_a5_nv12_layout full;
+	struct camss_a5_pd10_layout coarse;
+	int ret;
+
+	*format = ctx->format;
+	if (!V4L2_TYPE_IS_OUTPUT(type) || !ctx->coarse)
+		return 0;
+	full = (struct camss_a5_nv12_layout){ format->width, format->height,
+		format->plane_fmt[0].bytesperline, format->height, false };
+	ret = camss_a5_ipe_pd10_quarter(&full, &coarse);
+	if (ret)
+		return ret;
+	format->pixelformat = V4L2_PIX_FMT_QCOM_NV12_PD10;
+	format->num_planes = 2;
+	format->plane_fmt[1].bytesperline = coarse.stride;
+	format->plane_fmt[1].sizeimage = coarse.bytes;
+	return 0;
+}
+
 static int queue_setup(struct vb2_queue *q, unsigned int *buffers,
 		       unsigned int *planes, unsigned int sizes[],
 		       struct device *alloc_devs[])
 {
 	struct ipe_context *ctx = vb2_get_drv_priv(q);
-	u32 size = ctx->format.plane_fmt[0].sizeimage;
+	struct v4l2_pix_format_mplane f;
+	unsigned int i;
+	int ret = queue_format(ctx, q->type, &f);
 
-	if (*planes)
-		return *planes == 1 && sizes[0] >= size ? 0 : -EINVAL;
-	*planes = 1;
-	sizes[0] = size;
+	if (ret)
+		return ret;
+	if (*planes && *planes != f.num_planes)
+		return -EINVAL;
+	for (i = 0; i < f.num_planes; i++) {
+		if (*planes && sizes[i] < f.plane_fmt[i].sizeimage)
+			return -EINVAL;
+		sizes[i] = f.plane_fmt[i].sizeimage;
+	}
+	*planes = f.num_planes;
 	return 0;
 }
 
 static int buffer_prepare(struct vb2_buffer *vb)
 {
 	struct ipe_context *ctx = vb2_get_drv_priv(vb->vb2_queue);
-	u32 bytes = ctx->format.plane_fmt[0].sizeimage;
-	u32 offset = vb->planes[0].data_offset;
-	unsigned long size = vb2_plane_size(vb, 0);
+	struct v4l2_pix_format_mplane f;
+	unsigned int i;
+	int ret = queue_format(ctx, vb->type, &f);
 
-	if (offset > size || bytes > size - offset ||
-	    (u64)offset + bytes > U32_MAX)
+	if (ret)
+		return ret;
+	if (vb->num_planes != f.num_planes)
 		return -EINVAL;
-	if (V4L2_TYPE_IS_OUTPUT(vb->type)) {
-		if (vb2_get_plane_payload(vb, 0) < offset + bytes)
+	for (i = 0; i < f.num_planes; i++) {
+		u32 bytes = f.plane_fmt[i].sizeimage;
+		u32 offset = vb->planes[i].data_offset;
+		unsigned long size = vb2_plane_size(vb, i);
+
+		if (offset > size || bytes > size - offset || (u64)offset + bytes > U32_MAX)
 			return -EINVAL;
-	} else {
-		vb2_set_plane_payload(vb, 0, offset + bytes);
+		if (V4L2_TYPE_IS_OUTPUT(vb->type)) {
+			if (vb2_get_plane_payload(vb, i) < offset + bytes)
+				return -EINVAL;
+		} else {
+			vb2_set_plane_payload(vb, i, offset + bytes);
+		}
 	}
 	return 0;
 }
-
 
 static int buffer_output_validate(struct vb2_buffer *vb)
 {
@@ -593,6 +684,11 @@ static int querycap(struct file *file, void *private, struct v4l2_capability *ca
 
 static int enum_format(struct file *file, void *private, struct v4l2_fmtdesc *f)
 {
+	if (f->index == 2 && V4L2_TYPE_IS_OUTPUT(f->type)) {
+		f->pixelformat = V4L2_PIX_FMT_QCOM_NV12_PD10;
+		strscpy(f->description, "NV12 + native PD10 (local)", sizeof(f->description));
+		return 0;
+	}
 	if (f->index > 1)
 		return -EINVAL;
 	f->pixelformat = f->index ? V4L2_PIX_FMT_NV21 : V4L2_PIX_FMT_NV12;
@@ -603,11 +699,13 @@ static int try_format(struct file *file, void *private, struct v4l2_format *f)
 {
 	struct v4l2_pix_format_mplane *p = &f->fmt.pix_mp;
 	u64 stride, max_stride;
+	bool coarse = V4L2_TYPE_IS_OUTPUT(f->type) &&
+		p->pixelformat == V4L2_PIX_FMT_QCOM_NV12_PD10;
 
 	if (f->type != V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE &&
 	    f->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)
 		return -EINVAL;
-	if (p->pixelformat != V4L2_PIX_FMT_NV12 && p->pixelformat != V4L2_PIX_FMT_NV21)
+	if (!coarse && p->pixelformat != V4L2_PIX_FMT_NV12 && p->pixelformat != V4L2_PIX_FMT_NV21)
 		p->pixelformat = V4L2_PIX_FMT_NV12;
 	p->width = clamp_val(p->width, 128, 8192) & ~1U;
 	p->height = clamp_val(p->height, 128,
@@ -615,11 +713,18 @@ static int try_format(struct file *file, void *private, struct v4l2_format *f)
 	max_stride = ((IPE_IMAGE_MAX / 3 * 2) / p->height) & ~1U;
 	stride = min_t(u64, ALIGN(max_t(u64, p->width, p->plane_fmt[0].bytesperline), 2),
 		       max_stride);
+	if (coarse && (p->width != 640 || p->height != 480))
+		return -EOPNOTSUPP;
 	p->field = V4L2_FIELD_NONE;
 	p->num_planes = 1;
 	memset(p->plane_fmt, 0, sizeof(p->plane_fmt));
 	p->plane_fmt[0].bytesperline = stride;
 	p->plane_fmt[0].sizeimage = stride * p->height * 3 / 2;
+	if (coarse) {
+		p->num_planes = 2;
+		p->plane_fmt[1].bytesperline = 768;
+		p->plane_fmt[1].sizeimage = 46080;
+	}
 	if (!p->colorspace)
 		p->colorspace = V4L2_COLORSPACE_REC709;
 	memset(p->reserved, 0, sizeof(p->reserved));
@@ -628,8 +733,7 @@ static int try_format(struct file *file, void *private, struct v4l2_format *f)
 
 static int get_format(struct file *file, void *private, struct v4l2_format *f)
 {
-	f->fmt.pix_mp = file_context(file)->format;
-	return 0;
+	return queue_format(file_context(file), f->type, &f->fmt.pix_mp);
 }
 
 static int set_format(struct file *file, void *private, struct v4l2_format *f)
@@ -641,8 +745,22 @@ static int set_format(struct file *file, void *private, struct v4l2_format *f)
 	    vb2_is_busy(v4l2_m2m_get_dst_vq(ctx->fh.m2m_ctx)))
 		return -EBUSY;
 	ret = try_format(file, private, f);
-	if (!ret)
-		ctx->format = f->fmt.pix_mp; /* bypass has a single shared geometry */
+	if (!ret) {
+		bool output = V4L2_TYPE_IS_OUTPUT(f->type);
+		bool coarse = f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_QCOM_NV12_PD10;
+
+		if (!output && ctx->coarse && (f->fmt.pix_mp.width != 640 ||
+		    f->fmt.pix_mp.height != 480 || f->fmt.pix_mp.pixelformat != V4L2_PIX_FMT_NV12))
+			return -EINVAL;
+		ctx->format = f->fmt.pix_mp;
+		if (output)
+			ctx->coarse = coarse;
+		if (coarse) {
+			ctx->format.pixelformat = V4L2_PIX_FMT_NV12;
+			ctx->format.num_planes = 1;
+			memset(&ctx->format.plane_fmt[1], 0, sizeof(ctx->format.plane_fmt[1]));
+		}
+	}
 	return ret;
 }
 
@@ -774,6 +892,7 @@ static void release_device(struct video_device *video)
 	v4l2_device_unregister(&dev->v4l2);
 	v4l2_m2m_release(dev->scheduler);
 	media_device_cleanup(&dev->media);
+	kvfree(dev->dc_snapshot);
 	kfree(dev->firmware);
 	kfree(dev);
 }
@@ -946,3 +1065,24 @@ EXPORT_SYMBOL_GPL(camss_a5_m2m_status);
 MODULE_DESCRIPTION("SM8150 A5 IPE V4L2 mem2mem adapter");
 MODULE_LICENSE("GPL");
 MODULE_IMPORT_NS("DMA_BUF");
+
+/* Temporary bounded root-only diagnostic; header is request/bytes/CRC/changed.
+ * Snapshot is published only after a completed job and never aliases DMA RAM.
+ */
+ssize_t camss_a5_m2m_dc_snapshot(struct camss_a5_m2m *dev, char *buffer,
+				loff_t offset, size_t count)
+{
+	ssize_t ret = 0;
+
+	if (!dev || offset < 0)
+		return -EINVAL;
+	mutex_lock(&dev->hw_lock);
+	if (offset < dev->dc_snapshot_bytes) {
+		count = min_t(size_t, count, dev->dc_snapshot_bytes - offset);
+		memcpy(buffer, dev->dc_snapshot + offset, count);
+		ret = count;
+	}
+	mutex_unlock(&dev->hw_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(camss_a5_m2m_dc_snapshot);

@@ -3,6 +3,14 @@
 #define _UAPI_QCOM_IPE_A5_H
 #include <linux/types.h>
 #include <linux/v4l2-controls.h>
+#include <linux/videodev2.h>
+
+/* Experimental local OUTPUT bundle, not an upstream-reserved FourCC.
+ * Plane 0: one contiguous NV12 image. Plane 1: native quarter-size PD10.
+ * Both planes must belong to the same completed IFE SOF and remain owned
+ * by this queue until DQBUF. CAPTURE remains ordinary single-plane NV12.
+ */
+#define V4L2_PIX_FMT_QCOM_NV12_PD10 v4l2_fourcc('Q', 'N', '1', '0')
 
 /* Experimental local control allocation; not an upstream-reserved CID. */
 #define V4L2_CID_QCOM_IPE_A5_FRAME_PARAMS (V4L2_CID_USER_BASE + 0x1240)

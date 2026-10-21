@@ -16,4 +16,6 @@ struct camss_a5_m2m *camss_a5_m2m_register(struct camss_a5 *a5,
 int camss_a5_m2m_cleanup(struct camss_a5_m2m *dev);
 int camss_a5_m2m_unregister(struct camss_a5_m2m *dev);
 ssize_t camss_a5_m2m_status(struct camss_a5_m2m *dev, char *buffer, size_t size);
+ssize_t camss_a5_m2m_dc_snapshot(struct camss_a5_m2m *dev, char *buffer,
+				loff_t offset, size_t count);
 #endif
