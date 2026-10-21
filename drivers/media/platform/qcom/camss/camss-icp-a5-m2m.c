@@ -249,6 +249,14 @@ static int ensure_session(struct ipe_context *ctx)
 	return ret;
 }
 
+/* Called with hw_lock held, after the core returned or stop was attempted. */
+static bool image_transfer_owned(const struct camss_a5 *a5)
+{
+	return a5->ipe_dma_pending || a5->request_fw_mapped ||
+		a5->request.cpu || a5->image_input.cpu || a5->image_output.cpu ||
+		a5->dma_input.buffer || a5->dma_output.buffer;
+}
+
 static void device_work(struct work_struct *work)
 {
 	struct ipe_context *ctx = container_of(work, struct ipe_context, work);
@@ -265,6 +273,7 @@ static void device_work(struct work_struct *work)
 	enum camss_a5_ipe_result result = CAMSS_A5_IPE_RESET_REQUIRED;
 	struct media_request *request = src ? src->vb2_buf.req_obj.req : NULL;
 	struct qcom_ipe_a5_frame_params *params = NULL;
+	bool queue_error = false;
 	int ret = -ECANCELED;
 
 	if (!src || !dst) {
@@ -355,8 +364,14 @@ finish:
 		dev->completed++;
 		dev->direct_completed++;
 	}
+	/* ERROR buffers must remain dequeueable after a local rejection or
+	 * proven quiesce. Queue poison hides even the done list from DQBUF.
+	 * Preserve it only while per-frame DMA/backing ownership is unresolved.
+	 */
+	if (ret && ret != -ECANCELED)
+		queue_error = image_transfer_owned(dev->a5);
 	mutex_unlock(&dev->hw_lock);
-	if (ret && ret != -ECANCELED) {
+	if (queue_error) {
 		vb2_queue_error(v4l2_m2m_get_src_vq(ctx->fh.m2m_ctx));
 		vb2_queue_error(v4l2_m2m_get_dst_vq(ctx->fh.m2m_ctx));
 	}
