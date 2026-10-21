@@ -87,6 +87,19 @@ int camss_a5_ipe_run_gamma_status(struct camss_a5 *a5,
 				const struct camss_a5_ipe_colour *colour,
 				const struct camss_a5_ipe_gamma *gamma,
 				enum camss_a5_ipe_result *result);
+/* Optional quantized LTM with independent colour and Gamma. Large LUTs are
+ * copied to temporary CPU memory under the engine lock, checked before DMA
+ * allocation/MAP, then encoded into the same retained request as geometry.
+ * Caller owns input-domain/tuning selection; this is not automatic tuning.
+ * NULL LTM preserves the existing Gamma/colour path.
+ */
+int camss_a5_ipe_run_ltm_status(struct camss_a5 *a5,
+			      struct camss_a5_session *session,
+			      const struct camss_a5_ipe_job *job,
+			      const struct camss_a5_ipe_colour *colour,
+			      const struct camss_a5_ipe_gamma *gamma,
+			      const struct camss_a5_ipe_ltm *ltm,
+			      enum camss_a5_ipe_result *result);
 int camss_a5_ipe_run(struct camss_a5 *a5, struct camss_a5_session *session,
 		     const struct camss_a5_ipe_job *job);
 
