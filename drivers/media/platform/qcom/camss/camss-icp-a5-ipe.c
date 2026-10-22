@@ -445,6 +445,8 @@ int camss_a5_ipe_ltm_pd10_size(const struct camss_a5_ipe_io *io, u32 cores,
 	u32 single;
 	int ret;
 
+	if (!bytes)
+		return -EINVAL;
 	ret = camss_a5_ipe_ltm_size(io, cores, ltm, &single);
 	if (ret)
 		return ret;
