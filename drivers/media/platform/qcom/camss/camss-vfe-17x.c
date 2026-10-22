@@ -448,8 +448,21 @@ static int vfe_enable(struct vfe_line *line)
 	}
 
 	/* Queued PIX parameters must override defaults before the first frame. */
-	if (line->is_pix)
+	if (line->is_pix) {
+		unsigned long flags;
+
+		/* The stopped stream can leave its last RUP bit set. Retire it
+		 * before GTM's defer check, otherwise the initial DS4/GTM packet
+		 * waits for an ACK from a stream which no longer exists.
+		 * The output is not ON yet; live-stream RUP ordering is unchanged.
+		 */
+		if (vfe->camss->res->version == CAMSS_8150) {
+			spin_lock_irqsave(&vfe->output_lock, flags);
+			vfe->res->hw_ops->reg_update_clear(vfe, line->id);
+			spin_unlock_irqrestore(&vfe->output_lock, flags);
+		}
 		vfe_params_apply_queued(vfe, line);
+	}
 
 	ret = vfe_enable_output_v2(line);
 	if (ret < 0)
