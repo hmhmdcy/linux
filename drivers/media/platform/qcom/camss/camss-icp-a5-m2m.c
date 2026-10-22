@@ -237,7 +237,7 @@ static struct dma_buf *image_buffer(struct vb2_buffer *vb, unsigned int plane)
  return buffer ?: ERR_PTR(-ENOMEM);
 }
 
-static int ensure_session(struct ipe_context *ctx)
+static int ensure_session(struct ipe_context *ctx, bool use_coarse)
 {
 	struct camss_a5_m2m *dev = ctx->dev;
 	struct v4l2_pix_format_mplane *f = &ctx->format;
@@ -252,11 +252,20 @@ static int ensure_session(struct ipe_context *ctx)
 	ret = start_backend(dev);
 	if (ret)
 		return ret;
-	if (ctx->session.configured)
-		return 0;
+	if (ctx->session.configured) {
+		if (!!ctx->session.coarse.bytes == use_coarse)
+			return 0;
+		/* A bootstrap/held request can legitimately contain no LTM program.
+		 * Switch only after the previous transfer retired; destroy keeps
+		 * its existing uncertain-completion ownership checks.
+		 */
+		ret = camss_a5_ipe_destroy(dev->a5, &ctx->session);
+		if (ret)
+			return ret;
+	}
 	io.output = io.input;
 	ret = camss_a5_ipe_create(dev->a5, &ctx->session, CAMSS_A5_IPE_RT);
-	if (!ret && ctx->coarse) {
+	if (!ret && use_coarse) {
 		ret = camss_a5_ipe_pd10_quarter(&io.input, &coarse);
 		if (!ret)
 			ret = camss_a5_ipe_configure_nv12_pd10(dev->a5, &ctx->session, &io, &coarse);
@@ -291,7 +300,7 @@ static void device_work(struct work_struct *work)
 	enum camss_a5_ipe_result result = CAMSS_A5_IPE_RESET_REQUIRED;
 	struct media_request *request = src ? src->vb2_buf.req_obj.req : NULL;
 	struct qcom_ipe_a5_frame_params *params = NULL;
-	bool queue_error = false;
+	bool queue_error = false, use_coarse = false;
 	int ret = -ECANCELED;
 
 	if (!src || !dst) {
@@ -331,6 +340,11 @@ static void device_work(struct work_struct *work)
 		if (!ret) ret = camss_a5_ipe_frame_params_check(params);
 		if (ret) goto finish;
 	}
+	/* QN10 always owns both submitted planes. Import the second plane for
+	 * hardware only when this validated program requests a DC pass.
+	 */
+	use_coarse = ctx->coarse && params && (params->flags & QCOM_IPE_A5_LTM) &&
+		     params->ltm.iq.data_collection;
 	input = image_buffer(&src->vb2_buf, 0);
 	if (IS_ERR(input)) {
 		ret = PTR_ERR(input);
@@ -343,7 +357,7 @@ static void device_work(struct work_struct *work)
 		output = NULL;
 		goto finish;
 	}
-	if (ctx->coarse) {
+	if (use_coarse) {
 		coarse_buffer = image_buffer(&src->vb2_buf, 1);
 		if (IS_ERR(coarse_buffer)) {
 			ret = PTR_ERR(coarse_buffer);
@@ -367,12 +381,12 @@ static void device_work(struct work_struct *work)
 	job.output_dma = output;
 	job.input_offset = src->vb2_buf.planes[0].data_offset;
 	job.output_offset = dst->vb2_buf.planes[0].data_offset;
-	ret = ensure_session(ctx);
+	ret = ensure_session(ctx, use_coarse);
 	if (ret)
 		goto hw_fail;
 	job.request_id = ctx->sequence + 1;
-	ret = frame_params_run(ctx, &job, ctx->coarse ? &coarse : NULL, params, &result);
-	if (!ret && ctx->coarse) {
+	ret = frame_params_run(ctx, &job, use_coarse ? &coarse : NULL, params, &result);
+	if (!ret && use_coarse) {
 		u32 i, changed = 0, bytes = ctx->session.scratch_bytes;
 		u8 *data = dev->dc_snapshot + 16;
 
