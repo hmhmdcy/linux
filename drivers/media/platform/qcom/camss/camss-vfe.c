@@ -827,7 +827,10 @@ static struct camss_buffer *vfe_output_done(struct vfe_device *vfe,
 			output->sequence = ready_buf->vb.sequence + 1;
 		else
 			dev_err_ratelimited(vfe->camss->dev,
-					    "Missing SOF tag for completed PIX buffer\n");
+					    "Missing SOF tag for completed PIX buffer pad=%u active=%u sof=%u next-tag=%u\n",
+					    output->pad, output->gen2.active_num,
+					    line->output[0].sof_sequence,
+					    output->buf[1] ? output->buf[1]->sof_valid : 0);
 	} else {
 		ready_buf->vb.sequence = output->sequence++;
 	}
