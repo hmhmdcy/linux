@@ -803,6 +803,19 @@ void vfe_params_apply_queued(struct vfe_device *vfe,
  * Return the filled buffer for the caller to complete once the lock is
  * dropped, or NULL if none was queued
  */
+/* Only a restart after an empty auxiliary address FIFO can produce an
+ * expected untagged head. It remains an ERROR buffer and carries no SOF.
+ * A tagged completion ends recovery; later missing tags are still faults. */
+static bool vfe_aux_restart_drop(struct vfe_output *output,
+                                 const struct camss_buffer *buffer)
+{
+ if (buffer->sof_valid) {
+  output->recovering_sof = false;
+  return false;
+ }
+ return output->video_out.auxiliary && output->recovering_sof;
+}
+
 static struct camss_buffer *vfe_output_done(struct vfe_device *vfe,
 					    struct vfe_line *line,
 					    struct vfe_output *output, u64 ts)
@@ -810,6 +823,7 @@ static struct camss_buffer *vfe_output_done(struct vfe_device *vfe,
 	const struct vfe_hw_ops *ops = vfe->res->hw_ops;
 	struct camss_buffer *ready_buf;
 	u32 index;
+	bool restart_drop;
 
 	ready_buf = output->buf[0];
 	if (!ready_buf) {
@@ -823,8 +837,13 @@ static struct camss_buffer *vfe_output_done(struct vfe_device *vfe,
 
 	ready_buf->vb.vb2_buf.timestamp = ts;
 	if (line->is_pix && vfe->camss->res->version == CAMSS_8150) {
+		restart_drop = vfe_aux_restart_drop(output, ready_buf);
 		if (ready_buf->sof_valid)
 			output->sequence = ready_buf->vb.sequence + 1;
+		else if (restart_drop)
+			dev_info_ratelimited(vfe->camss->dev,
+				"Dropped untagged auxiliary restart buffer pad=%u sof=%u\n",
+				output->pad, line->output[0].sof_sequence);
 		else
 			dev_err_ratelimited(vfe->camss->dev,
 					    "Missing SOF tag for completed PIX buffer pad=%u active=%u sof=%u next-tag=%u\n",
@@ -1003,6 +1022,7 @@ static int vfe_enable_one_output(struct vfe_line *line, struct vfe_output *outpu
 
 	output->sequence = 0;
 	output->sof_sequence = 0;
+	output->recovering_sof = false;
 	output->wait_reg_update = 0;
 	reinit_completion(&output->reg_update);
 
@@ -1173,8 +1193,10 @@ int vfe_queue_buffer_v2(struct camss_video *vid,
 	if (output->state == VFE_OUTPUT_ON &&
 	    output->gen2.active_num < 2) {
 		output->buf[output->gen2.active_num++] = buf;
-		if (vid->auxiliary && output->gen2.active_num == 1)
+		if (vid->auxiliary && output->gen2.active_num == 1) {
+			output->recovering_sof = true;
 			ops->vfe_output_start(vfe, output);
+		}
 		if (ops->vfe_output_update)
 			ops->vfe_output_update(vfe, output, buf);
 		else
