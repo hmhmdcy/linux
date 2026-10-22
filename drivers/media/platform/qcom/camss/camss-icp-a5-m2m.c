@@ -26,6 +26,8 @@
 #include "camss-icp-a5-m2m.h"
 
 #define IPE_IMAGE_MAX (64U * 1024U * 1024U)
+/* Paired coarse backing is bounded by the existing diagnostic scratch owner. */
+#define IPE_COARSE_MAX_BYTES 0x40000U
 
 struct ipe_context {
 	struct v4l2_fh fh;
@@ -291,6 +293,7 @@ static void device_work(struct work_struct *work)
 	struct vb2_v4l2_buffer *dst = v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
 	struct dma_buf *input = NULL, *output = NULL, *coarse_buffer = NULL;
 	struct camss_a5_ipe_coarse_input coarse = {};
+	struct camss_a5_pd10_layout coarse_layout;
 	struct camss_a5_ipe_job job = {
 		.input_bytes = ctx->format.plane_fmt[0].sizeimage,
 		.output_bytes = ctx->format.plane_fmt[0].sizeimage,
@@ -358,6 +361,13 @@ static void device_work(struct work_struct *work)
 		goto finish;
 	}
 	if (use_coarse) {
+		struct camss_a5_nv12_layout full = {
+			ctx->format.width, ctx->format.height,
+			ctx->format.plane_fmt[0].bytesperline, ctx->format.height, false };
+
+		ret = camss_a5_ipe_pd10_quarter(&full, &coarse_layout);
+		if (ret)
+			goto finish;
 		coarse_buffer = image_buffer(&src->vb2_buf, 1);
 		if (IS_ERR(coarse_buffer)) {
 			ret = PTR_ERR(coarse_buffer);
@@ -373,7 +383,7 @@ static void device_work(struct work_struct *work)
 		dev->dc_snapshot_bytes = 0;
 		coarse.dma = coarse_buffer;
 		coarse.offset = src->vb2_buf.planes[1].data_offset;
-		coarse.bytes = 46080;
+		coarse.bytes = coarse_layout.bytes;
 		coarse.scratch_output = dev->dc_snapshot + 16;
 		coarse.scratch_capacity = 0x40000;
 	}
@@ -713,6 +723,9 @@ static int try_format(struct file *file, void *private, struct v4l2_format *f)
 {
 	struct v4l2_pix_format_mplane *p = &f->fmt.pix_mp;
 	u64 stride, max_stride;
+	struct camss_a5_nv12_layout full;
+	struct camss_a5_pd10_layout coarse_layout;
+	int ret;
 	bool coarse = V4L2_TYPE_IS_OUTPUT(f->type) &&
 		p->pixelformat == V4L2_PIX_FMT_QCOM_NV12_PD10;
 
@@ -727,8 +740,16 @@ static int try_format(struct file *file, void *private, struct v4l2_format *f)
 	max_stride = ((IPE_IMAGE_MAX / 3 * 2) / p->height) & ~1U;
 	stride = min_t(u64, ALIGN(max_t(u64, p->width, p->plane_fmt[0].bytesperline), 2),
 		       max_stride);
-	if (coarse && (p->width != 640 || p->height != 480))
-		return -EOPNOTSUPP;
+	if (coarse) {
+		full = (struct camss_a5_nv12_layout){ p->width, p->height, stride, p->height, false };
+		ret = camss_a5_ipe_pd10_quarter(&full, &coarse_layout);
+		if (ret)
+			return ret;
+		/* Reject a larger coarse owner before REQBUFS or hardware configuration.
+		 * The generic serializer has no such allocation policy baked into it. */
+		if (coarse_layout.bytes > IPE_COARSE_MAX_BYTES)
+			return -EOPNOTSUPP;
+	}
 	p->field = V4L2_FIELD_NONE;
 	p->num_planes = 1;
 	memset(p->plane_fmt, 0, sizeof(p->plane_fmt));
@@ -736,8 +757,8 @@ static int try_format(struct file *file, void *private, struct v4l2_format *f)
 	p->plane_fmt[0].sizeimage = stride * p->height * 3 / 2;
 	if (coarse) {
 		p->num_planes = 2;
-		p->plane_fmt[1].bytesperline = 768;
-		p->plane_fmt[1].sizeimage = 46080;
+		p->plane_fmt[1].bytesperline = coarse_layout.stride;
+		p->plane_fmt[1].sizeimage = coarse_layout.bytes;
 	}
 	if (!p->colorspace)
 		p->colorspace = V4L2_COLORSPACE_REC709;
@@ -763,8 +784,12 @@ static int set_format(struct file *file, void *private, struct v4l2_format *f)
 		bool output = V4L2_TYPE_IS_OUTPUT(f->type);
 		bool coarse = f->fmt.pix_mp.pixelformat == V4L2_PIX_FMT_QCOM_NV12_PD10;
 
-		if (!output && ctx->coarse && (f->fmt.pix_mp.width != 640 ||
-		    f->fmt.pix_mp.height != 480 || f->fmt.pix_mp.pixelformat != V4L2_PIX_FMT_NV12))
+		if (!output && ctx->coarse &&
+		    (f->fmt.pix_mp.width != ctx->format.width ||
+		     f->fmt.pix_mp.height != ctx->format.height ||
+		     f->fmt.pix_mp.pixelformat != V4L2_PIX_FMT_NV12 ||
+		     f->fmt.pix_mp.plane_fmt[0].bytesperline != ctx->format.plane_fmt[0].bytesperline ||
+		     f->fmt.pix_mp.plane_fmt[0].sizeimage != ctx->format.plane_fmt[0].sizeimage))
 			return -EINVAL;
 		ctx->format = f->fmt.pix_mp;
 		if (output)
