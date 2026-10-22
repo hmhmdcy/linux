@@ -385,6 +385,10 @@ int camss_a5_ipe_encode_io(void *destination, u32 bytes,
 		put_unaligned_le32(coarse->height, image + 8);
 		put_unaligned_le32(coarse->stride, image + 52);
 		put_unaligned_le32(coarse->slice_height, image + 56);
+		/* Stock PPS-only multipass topology. Without it the native scheduler
+		 * can discard the DC stripe when no NPS output is requested.
+		 */
+		put_unaligned_le32(3, output + 1200);
 	}
 	put_unaligned_le32(1, output + 1192);
 	return 0;

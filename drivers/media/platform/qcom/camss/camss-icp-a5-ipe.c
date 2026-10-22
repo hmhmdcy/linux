@@ -509,6 +509,13 @@ int camss_a5_ipe_encode_ltm_pd10_striping(void *buffer, u32 capacity,
 	memset(output + 2268, 0, 624);
 	put_unaligned_le32(2, output + 20);
 	ltm_coarse_axis(output + 24, 120, 108, false);
+	/* The PPS topology owns an implicit PD10 intermediate in scratch.
+	 * Describe its Y/chroma write extent as well as the LTM DC geometry;
+	 * an empty write extent makes the native distributor drop this stripe.
+	 */
+	put_unaligned_le16(119, output + 24 + 270);
+	put_unaligned_le16(59, output + 24 + 274);
+	put_unaligned_le16(119, output + 24 + 376);
 	put_unaligned_le16(119, output + 24 + 352);
 	put_unaligned_le16(1, output + 24 + 390);
 	put_unaligned_le16(1, output + 24 + 404);
@@ -517,6 +524,9 @@ int camss_a5_ipe_encode_ltm_pd10_striping(void *buffer, u32 capacity,
 	put_unaligned_le32(434, output + 436 + 400);
 	put_unaligned_le32(2460, output + 436 + 408);
 	put_unaligned_le16(159, output + 2268 + 6);
+	put_unaligned_le16(159, output + 2268 + 30);
+	put_unaligned_le16(159, output + 2268 + 318);
+	put_unaligned_le16(159, output + 2268 + 322);
 	put_unaligned_le16(257, output + 2268 + 44);
 	ltm_coarse_axis(output + 2268 + 48, 160, 144, true);
 	put_unaligned_le32(160 * 120, output + 2268 + 600);
