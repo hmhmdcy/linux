@@ -146,10 +146,14 @@ static int vfe_175_params_unsupported(struct device *dev,
 	return -EINVAL;
 }
 
-const struct v4l2_isp_params_block_type_info vfe_175_params_info[9] = {
+const struct v4l2_isp_params_block_type_info vfe_175_params_info[10] = {
 	[0] = {
 		.size = sizeof(struct v4l2_isp_block_header),
 		.block_validate = vfe_175_params_unsupported,
+	},
+	[CAMSS_PARAMS_IFE_GTM] = {
+		.size = sizeof(struct camss_params_ife_gtm),
+		.block_validate = vfe_175_gtm_validate,
 	},
 	[CAMSS_PARAMS_IFE_DS4] = {
 		.size = sizeof(struct camss_params_ife_ds4),
@@ -238,6 +242,7 @@ int vfe_175_pixel_prepare(struct vfe_line *line)
 		.gamma_enabled = true,
 	};
 	vfe_175_wb_write(vfe);
+	vfe_175_gtm_stop(vfe);
 	vfe_175_lsc_init(vfe);
 	vfe_175_ccm_init(vfe);
 	ret = vfe_175_stats_prepare(line);
@@ -253,6 +258,7 @@ error:
 
 void vfe_175_pixel_stop(struct vfe_device *vfe)
 {
+	vfe_175_gtm_stop(vfe);
 	vfe_175_blc_enable(vfe, false);
 	vfe_175_lsc_stop(vfe);
 	vfe_175_ccm_stop(vfe);
@@ -277,6 +283,11 @@ void vfe_175_params_apply(struct vfe_device *vfe, struct vfe_line *line,
 			(const void *)&params->data[offset];
 		const struct camss_params_wb_gain *wb;
 
+		if (block->type == CAMSS_PARAMS_IFE_GTM) {
+			vfe_175_gtm_params(vfe, block);
+			offset += block->size;
+			continue;
+		}
 		if (block->type == CAMSS_PARAMS_IFE_DS4) {
 			vfe_175_ds4_params(vfe, line, block);
 			offset += block->size;

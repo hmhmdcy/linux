@@ -403,6 +403,9 @@ u32 vfe_hw_version(struct vfe_device *vfe);
  * Return 0 on success or a negative error code otherwise
  */
 int vfe_enable_v2(struct vfe_line *line);
+/* output_lock held; caller completes the returned buffer after unlocking. */
+struct camss_buffer *vfe_params_apply_next(struct vfe_device *vfe,
+					 struct vfe_line *line, u32 sequence);
 void vfe_params_apply_queued(struct vfe_device *vfe, struct vfe_line *line);
 
 /*

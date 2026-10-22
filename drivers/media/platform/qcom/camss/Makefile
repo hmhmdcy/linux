@@ -36,6 +36,7 @@ qcom-camss-objs += \
 		camss-vfe-175-demux.o \
 		camss-vfe-175-mnds.o \
 		camss-vfe-175-ds4.o \
+		camss-vfe-175-gtm.o \
 		camss-vfe-340.o \
 		camss-vfe-480.o \
 		camss-vfe-680.o \

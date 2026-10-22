@@ -670,6 +670,8 @@ static void vfe_stats_fill(struct vfe_device *vfe, struct vfe_output *output,
 	v4l2_isp_stats_init_buffer(stats, V4L2_ISP_VERSION_V1);
 	if (vfe->res->hw_ops->vfe_stats_fill) {
 		vfe->res->hw_ops->vfe_stats_fill(vfe, output, stats);
+		if (vfe->camss->res->version == CAMSS_8150 && output->line->is_pix)
+			vfe_175_gtm_fill(vfe, output, buf, stats);
 		goto done;
 	}
 
@@ -742,7 +744,7 @@ static struct vfe_output *vfe_params_output(struct vfe_line *line)
  * Return the applied buffer for the caller to complete once the lock is
  * dropped, or NULL if none was queued
  */
-static struct camss_buffer *vfe_params_apply_next(struct vfe_device *vfe,
+struct camss_buffer *vfe_params_apply_next(struct vfe_device *vfe,
 						  struct vfe_line *line,
 						  u32 sequence)
 {
@@ -753,6 +755,10 @@ static struct camss_buffer *vfe_params_apply_next(struct vfe_device *vfe,
 	if (!params || !ops->vfe_params_apply)
 		return NULL;
 
+	buf = list_first_entry_or_null(&params->pending_bufs, struct camss_buffer, queue);
+	if (buf && line->is_pix && vfe->camss->res->version == CAMSS_8150 &&
+	    vfe_175_gtm_defer(vfe, buf->meta))
+		return NULL;
 	buf = vfe_buf_get_pending(params);
 	if (!buf)
 		return NULL;

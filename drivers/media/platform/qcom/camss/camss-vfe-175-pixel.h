@@ -5,6 +5,7 @@
 #include <linux/types.h>
 #include <media/v4l2-isp.h>
 #include "camss-vfe-175-stats.h"
+#include "camss-vfe-175-gtm.h"
 
 struct vfe_device;
 struct vfe_line;
@@ -24,9 +25,10 @@ struct vfe_175_pixel_state {
 	bool lsc_enabled;
 	u8 lsc_bank;
 	struct vfe_175_stats_state stats;
+	struct vfe_175_gtm_state gtm;
 };
 
-extern const struct v4l2_isp_params_block_type_info vfe_175_params_info[9];
+extern const struct v4l2_isp_params_block_type_info vfe_175_params_info[10];
 int vfe_175_pixel_prepare(struct vfe_line *line);
 void vfe_175_pixel_stop(struct vfe_device *vfe);
 void vfe_175_params_apply(struct vfe_device *vfe, struct vfe_line *line,

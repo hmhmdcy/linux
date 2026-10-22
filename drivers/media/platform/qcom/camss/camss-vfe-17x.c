@@ -283,6 +283,8 @@ static u32 vfe_reg_update_mask(struct vfe_device *vfe,
 static void vfe_reg_update(struct vfe_device *vfe, enum vfe_line_id line_id)
 {
 	vfe->reg_update |= vfe_reg_update_mask(vfe, line_id);
+	if (vfe->camss->res->version == CAMSS_8150 && vfe->line[line_id].is_pix)
+		vfe_175_gtm_arm(vfe);
 
 	/* Enforce ordering between previous reg writes and reg update */
 	wmb();
@@ -506,6 +508,8 @@ static void vfe_isr_sof(struct vfe_device *vfe, enum vfe_line_id line_id)
 			if (buf && !buf->sof_valid) {
 				buf->vb.sequence = event.u.frame_sync.frame_sequence;
 				buf->sof_valid = true;
+				if (line->is_pix)
+					vfe_175_gtm_tag(vfe, buf);
 				break;
 			}
 		}
@@ -522,13 +526,26 @@ static void vfe_isr_sof(struct vfe_device *vfe, enum vfe_line_id line_id)
  */
 static void vfe_isr_reg_update(struct vfe_device *vfe, enum vfe_line_id line_id)
 {
+	struct vfe_line *line = &vfe->line[line_id];
+	struct camss_buffer *params = NULL;
 	struct vfe_output *output;
 	unsigned long flags;
 
 	spin_lock_irqsave(&vfe->output_lock, flags);
 	vfe->res->hw_ops->reg_update_clear(vfe, line_id);
 
-	output = &vfe->line[line_id].output[0];
+	output = &line->output[0];
+	if (vfe->camss->res->version == CAMSS_8150 && line->is_pix) {
+		struct vfe_175_gtm_state *gtm = &vfe->pixel175.gtm;
+
+		vfe_175_gtm_ack(vfe);
+		/* A deferred GTM starts only after the previous PIX RUP is retired. */
+		if (output->state == VFE_OUTPUT_ON && (gtm->tracking || gtm->deferred)) {
+			params = vfe_params_apply_next(vfe, line, output->sof_sequence);
+			if (params)
+				vfe->res->hw_ops->reg_update(vfe, line_id);
+		}
+	}
 
 	if (output->wait_reg_update) {
 		output->wait_reg_update = 0;
@@ -536,6 +553,8 @@ static void vfe_isr_reg_update(struct vfe_device *vfe, enum vfe_line_id line_id)
 	}
 
 	spin_unlock_irqrestore(&vfe->output_lock, flags);
+	if (params)
+		vb2_buffer_done(&params->vb.vb2_buf, VB2_BUF_STATE_DONE);
 }
 
 /*
@@ -775,7 +794,8 @@ static int vfe_175_validate_all_params(struct vfe_line *line,
 const struct vfe_hw_ops vfe_ops_175 = {
 	.vfe_stats_fill = vfe_175_stats_fill,
 	.params_max_payload = CAMSS_PARAMS_IFE_GAMMA_MAX_PAYLOAD +
-			      sizeof(struct camss_params_ife_ds4),
+			      sizeof(struct camss_params_ife_ds4) +
+			      sizeof(struct camss_params_ife_gtm),
 	.params_validate = vfe_175_validate_all_params,
 	.params_info = vfe_175_params_info,
 	.params_num_types = ARRAY_SIZE(vfe_175_params_info),

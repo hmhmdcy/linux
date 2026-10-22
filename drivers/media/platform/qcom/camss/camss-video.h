@@ -24,6 +24,9 @@ struct camss_buffer {
 	dma_addr_t addr[3];
 	struct list_head queue;
 	bool sof_valid;
+	/* IFE175 processing state captured with this buffer's input SOF. */
+	u64 gtm_cookie, gtm_generation;
+	u32 gtm_status, gtm_bank;
 
 	/* Metadata output nodes: kernel copy of the buffer, validated at prepare */
 	void *meta;

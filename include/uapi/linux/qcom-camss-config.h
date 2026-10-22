@@ -41,7 +41,38 @@ enum camss_params_block_type {
 	CAMSS_PARAMS_LSC = 6,
 	CAMSS_PARAMS_IFE_GAMMA = 7,
 	CAMSS_PARAMS_IFE_DS4 = 8,
+	CAMSS_PARAMS_IFE_GTM = 9,
 };
+
+/* Local experimental GTM parameter/statistics types, not reserved upstream.
+ * Flags must be zero; disabling also requires the full payload and cookie.
+ * cookie is a caller token, not proof of application. Statistics acknowledge
+ * it only after PIX REG_UPDATE ACK and snapshot it at the buffer's SOF.
+ * base is unsigned Q12 (18 bits), slope is signed Q20 (26 bits).
+ * CPU DMI uses canonical low/high words, without the HW-CDM word swap.
+ */
+#define CAMSS_IFE_GTM_ENTRIES 64
+struct camss_ife_gtm_segment {
+	__u32 base;
+	__s32 slope;
+};
+struct camss_params_ife_gtm {
+	struct v4l2_isp_block_header header;
+	__u64 cookie;
+	__u32 enabled;
+	__u32 reserved;
+	struct camss_ife_gtm_segment segments[CAMSS_IFE_GTM_ENTRIES];
+} __attribute__((aligned(8)));
+
+#define CAMSS_IFE_GTM_STATUS_ACKED (1U << 0)
+#define CAMSS_IFE_GTM_STATUS_ENABLED (1U << 1)
+struct camss_stats_ife_gtm {
+	struct v4l2_isp_block_header header;
+	__u64 cookie;
+	__u64 generation;
+	__u32 status;
+	__u32 bank;
+} __attribute__((aligned(8)));
 
 /* Local experimental identifier, not reserved upstream. Single-plane PD10:
  * each 2x2 YUV420 block occupies eight bytes. SM8150 rows are aligned to
@@ -349,6 +380,7 @@ struct camss_params_ife_gamma {
 enum camss_stats_block_type {
 	CAMSS_STATS_AEC_BHIST = 1,
 	CAMSS_STATS_AWB_BG = 2,
+	CAMSS_STATS_IFE_GTM = 3,
 };
 
 /* Number of bins in a Bayer histogram. */
@@ -434,6 +466,6 @@ struct camss_stats_awb_bg {
 #define CAMSS_STATS_BG_MAX_PAYLOAD	(sizeof(struct camss_stats_awb_bg) + \
 	CAMSS_STATS_BG_MAX_REGIONS * sizeof(struct camss_stats_bg_region))
 #define CAMSS_STATS_MAX_PAYLOAD		(sizeof(struct camss_stats_bhist) + \
-	CAMSS_STATS_BG_MAX_PAYLOAD)
+	CAMSS_STATS_BG_MAX_PAYLOAD + sizeof(struct camss_stats_ife_gtm))
 
 #endif /* _UAPI_LINUX_QCOM_CAMSS_CONFIG_H */
