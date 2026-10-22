@@ -17,6 +17,7 @@ struct vfe_175_gtm_state {
 };
 int vfe_175_gtm_encode(const struct camss_params_ife_gtm *gtm, u32 words[128]);
 int vfe_175_gtm_validate(struct device *dev, const struct v4l2_isp_block_header *block);
+int vfe_175_gtm_validate_buffer(const struct v4l2_isp_buffer *params);
 void vfe_175_gtm_params(struct vfe_device *vfe, const struct v4l2_isp_block_header *block);
 bool vfe_175_gtm_defer(struct vfe_device *vfe, const struct v4l2_isp_buffer *params);
 void vfe_175_gtm_arm(struct vfe_device *vfe);

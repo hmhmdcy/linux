@@ -787,7 +787,8 @@ static int vfe_175_validate_all_params(struct vfe_line *line,
 {
 	int ret = vfe_175_params_validate_line(line, params);
 
-	return ret ?: vfe_175_ds4_validate_line(line, params);
+	ret = ret ?: vfe_175_ds4_validate_line(line, params);
+	return ret ?: vfe_175_gtm_validate_buffer(params);
 }
 
 /* SM8150 full IFE: shared RDI transport, matched CAMIF and FULL DMA. */

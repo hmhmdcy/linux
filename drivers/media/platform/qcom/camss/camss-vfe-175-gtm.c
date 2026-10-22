@@ -59,6 +59,25 @@ static void gtm_enable(struct vfe_device *vfe, bool enable)
 		       vfe->base + GTM_ENABLE);
 }
 
+int vfe_175_gtm_validate_buffer(const struct v4l2_isp_buffer *params)
+{
+	size_t offset;
+	bool seen = false;
+
+	/* The common parser accepts repeats; one GTM transaction per RUP only. */
+	for (offset = 0; offset < params->data_size;) {
+		const struct v4l2_isp_block_header *block = (const void *)&params->data[offset];
+
+		if (block->type == CAMSS_PARAMS_IFE_GTM) {
+			if (seen)
+				return -EINVAL;
+			seen = true;
+		}
+		offset += block->size;
+	}
+	return 0;
+}
+
 void vfe_175_gtm_params(struct vfe_device *vfe, const struct v4l2_isp_block_header *block)
 {
 	const struct camss_params_ife_gtm *gtm =
