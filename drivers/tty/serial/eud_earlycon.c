@@ -72,17 +72,6 @@ static inline void eud_put(void __iomem *base, unsigned int off, unsigned int v)
         writel_relaxed(v, base + off);
 }
 
-static void eud_wait_tx(void __iomem *base)
-{
-	unsigned int i;
-
-	for (i = 0; i < EUD_TX_POLL_LIMIT; i++) {
-		if (readl_relaxed(base + EUD_REG_INT_STATUS_1) & EUD_INT_TX)
-			return;
-		barrier();
-	}
-}
-
 static void eud_write(struct console *con, const char *s, unsigned int n)
 {
 	struct earlycon_device *dev = con->data;
