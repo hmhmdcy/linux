@@ -312,4 +312,3 @@ static const struct imx319_reg imx319_222mhz_mode_regs[] = {
 	{ 0x3937, 0x00 },
 	{ 0x30ac, 0x00 },
 };
-
