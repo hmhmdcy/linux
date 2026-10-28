@@ -404,7 +404,7 @@
 	status = "okay";
 };
 
-/* Stock QUP1 wiring; no charger client or charging policy is bound. */
+/* Stock QUP1 charger and protection-managed USB input wiring. */
 &gpi_dma0 {
 	status = "okay";
 };
@@ -417,21 +417,53 @@
 	clock-frequency = <400000>;
 	status = "okay";
 
-	/* QUP1 / 0x5c, verified MP2650: read-only power_supply observation. */
+	/* QUP1 / 0x5c. The managed driver stays read-only unless the service
+	 * explicitly loads it with control=1 after verifying every provider.
+	 */
 	charger@5c {
 		compatible = "mps,mp2650";
 		reg = <0x5c>;
+		realme,bq28z610-cells-0071;
+		battery-gauge = <&samurai_battery_gauge>;
+		input-supply = <&samurai_usb_input>;
+		protection-supply = <&samurai_gauge_protection>;
 	};
 };
 
-/* Stock BQ28Z610 at QUP15: standard read-only battery monitoring. */
+/* Stock BQ28Z610 at QUP15. The factory pack reports signed instantaneous
+ * current at command 0x0c; 0x14 remains available as current_avg.
+ */
 &i2c15 {
 	clock-frequency = <100000>;
 	status = "okay";
 
-	fuel-gauge@55 {
+	samurai_battery_gauge: fuel-gauge@55 {
 		compatible = "ti,bq28z610";
 		reg = <0x55>;
+		realme,instant-current-0x0c;
+	};
+};
+
+&spmi_bus {
+	pmic@2 {
+		/* Read-only PM8150B USB input observer. The one-second software
+		 * poll remains the fallback if an IRQ is not delivered.
+		 */
+		samurai_usb_input: usb-input@1300 {
+			compatible = "realme,rmx1931-usb-input";
+			reg = <0x1300>;
+			interrupts = <0x2 0x13 0x4 IRQ_TYPE_EDGE_BOTH>,
+				     <0x2 0x13 0x6 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "usbin-plugin", "usbin-src-change";
+			status = "okay";
+		};
+	};
+};
+
+/ {
+	samurai_gauge_protection: gauge-protection {
+		compatible = "realme,samurai-gauge-protection";
+		battery-gauge = <&samurai_battery_gauge>;
 	};
 };
 

@@ -56,6 +56,8 @@
 
 #include <linux/power/bq27xxx_battery.h>
 
+#include "bq27xxx-status-policy.h"
+
 #define BQ27XXX_MANUFACTURER	"Texas Instruments"
 
 /* BQ27XXX Flags */
@@ -856,6 +858,28 @@ static enum power_supply_property bq28z610_props[] = {
 	POWER_SUPPLY_PROP_MANUFACTURER,
 };
 
+/* Enabled only by the explicit native samurai profile below. */
+static enum power_supply_property bq28z610_samurai_props[] = {
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_PRESENT,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
+	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW,
+	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
+	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_CHARGE_NOW,
+	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
+	POWER_SUPPLY_PROP_POWER_AVG,
+	POWER_SUPPLY_PROP_HEALTH,
+	POWER_SUPPLY_PROP_MANUFACTURER,
+	POWER_SUPPLY_PROP_CURRENT_AVG,
+};
+
 static enum power_supply_property bq34z100_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_PRESENT,
@@ -1104,6 +1128,28 @@ static const char * const bq27xxx_dm_reg_name[] = {
 };
 
 
+/* The factory gauge maps instantaneous current to 0x0c while the generic
+ * BQ28Z610 profile reads 0x14. Gate this board-specific interpretation and
+ * the Full-status bridge on an explicit DT property so other systems using
+ * the same chip retain their standard register and property semantics.
+ */
+static bool bq27xxx_samurai_instant(struct bq27xxx_device_info *di)
+{
+	return di->chip == BQ28Z610 &&
+		of_machine_is_compatible("realme,samurai") &&
+		of_device_is_compatible(di->dev->of_node, "ti,bq28z610") &&
+		device_property_read_bool(di->dev, "realme,instant-current-0x0c");
+}
+
+static void bq27xxx_samurai_props(struct bq27xxx_device_info *di,
+				 struct power_supply_desc *desc)
+{
+	if (!bq27xxx_samurai_instant(di))
+		return;
+	desc->properties = bq28z610_samurai_props;
+	desc->num_properties = ARRAY_SIZE(bq28z610_samurai_props);
+}
+
 static bool bq27xxx_dt_to_nvm = true;
 module_param_named(dt_monitored_battery_updates_nvm, bq27xxx_dt_to_nvm, bool, 0444);
 MODULE_PARM_DESC(dt_monitored_battery_updates_nvm,
@@ -1126,8 +1172,12 @@ static int poll_interval_param_set(const char *val, const struct kernel_param *k
 		return ret;
 
 	mutex_lock(&bq27xxx_list_lock);
-	list_for_each_entry(di, &bq27xxx_battery_devices, list)
-		mod_delayed_work(system_percpu_wq, &di->work, 0);
+	list_for_each_entry(di, &bq27xxx_battery_devices, list) {
+		mutex_lock(&di->lock);
+		if (!di->removed && !di->suspended)
+			mod_delayed_work(system_percpu_wq, &di->work, 0);
+		mutex_unlock(&di->lock);
+	}
 	mutex_unlock(&bq27xxx_list_lock);
 
 	return ret;
@@ -1842,6 +1892,20 @@ static int bq27xxx_battery_read_health(struct bq27xxx_device_info *di,
 	return 0;
 }
 
+static int bq27xxx_samurai_average_current(struct bq27xxx_device_info *di,
+					 union power_supply_propval *val)
+{
+	int raw;
+
+	if (!bq27xxx_samurai_instant(di))
+		return -EINVAL;
+	raw = bq27xxx_read(di, BQ27XXX_REG_AI, false);
+	if (raw < 0)
+		return raw;
+	val->intval = (int)((s16)raw) * 1000;
+	return 0;
+}
+
 static bool bq27xxx_battery_is_full(struct bq27xxx_device_info *di, int flags)
 {
 	if (di->opts & BQ27XXX_O_ZERO)
@@ -1867,7 +1931,14 @@ static int bq27xxx_battery_current_and_status(
 	int curr;
 	int flags;
 
-	curr = bq27xxx_read(di, BQ27XXX_REG_AI, false);
+	/* The native opt-in changes both STATUS and CURRENT_NOW together.
+	 * CURRENT_AVG retains the original signed 0x14 path. Do not consult
+	 * any charger/source property while servicing a gauge property.
+	 */
+	if (bq27xxx_samurai_instant(di))
+		curr = di->bus.read(di, 0x0c, false);
+	else
+		curr = bq27xxx_read(di, BQ27XXX_REG_AI, false);
 	if (curr < 0) {
 		dev_err(di->dev, "error reading current\n");
 		return curr;
@@ -1944,7 +2015,7 @@ static void bq27xxx_battery_update_unlocked(struct bq27xxx_device_info *di)
 
 	di->last_update = jiffies;
 
-	if (!di->removed && poll_interval > 0)
+	if (!di->removed && !di->suspended && poll_interval > 0)
 		mod_delayed_work(system_percpu_wq, &di->work, poll_interval * HZ);
 }
 
@@ -2123,11 +2194,16 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 					union power_supply_propval *val)
 {
 	int ret = 0;
+	bool force_full;
+	u32 force_full_generation;
 	struct bq27xxx_device_info *di = power_supply_get_drvdata(psy);
 
 	mutex_lock(&di->lock);
 	if (time_is_before_jiffies(di->last_update + 5 * HZ))
 		bq27xxx_battery_update_unlocked(di);
+	force_full = bq27xxx_full_status_active(di->full_status_override,
+			di->full_status_deadline, jiffies);
+	force_full_generation = di->full_status_generation;
 	mutex_unlock(&di->lock);
 
 	if (psp != POWER_SUPPLY_PROP_PRESENT && di->cache.flags < 0)
@@ -2136,6 +2212,26 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
 		ret = bq27xxx_battery_current_and_status(di, NULL, val, NULL);
+		if (!ret && force_full &&
+		    val->intval != POWER_SUPPLY_STATUS_CHARGING) {
+			union power_supply_propval fresh;
+
+			mutex_lock(&di->lock);
+			if (bq27xxx_full_status_confirmed(
+				    di->full_status_override,
+				    di->full_status_deadline, jiffies,
+				    di->full_status_generation,
+				    force_full_generation)) {
+				ret = bq27xxx_battery_current_and_status(
+					di, NULL, &fresh, NULL);
+				if (!ret)
+					val->intval = bq27xxx_full_status_apply(
+						fresh.intval, true,
+						POWER_SUPPLY_STATUS_CHARGING,
+						POWER_SUPPLY_STATUS_FULL);
+			}
+			mutex_unlock(&di->lock);
+		}
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		ret = bq27xxx_battery_voltage(di, val);
@@ -2145,6 +2241,9 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		ret = bq27xxx_battery_current_and_status(di, val, NULL, NULL);
+		break;
+	case POWER_SUPPLY_PROP_CURRENT_AVG:
+		ret = bq27xxx_samurai_average_current(di, val);
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		ret = bq27xxx_simple_value(di->cache.capacity, val);
@@ -2216,12 +2315,77 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 	return ret;
 }
 
+static void bq27xxx_full_status_expire(struct work_struct *work)
+{
+	struct bq27xxx_device_info *di = container_of(
+		work, struct bq27xxx_device_info, full_status_work.work);
+	bool changed = false;
+
+	mutex_lock(&di->lock);
+	if (di->full_status_override &&
+	    time_after_eq(jiffies, di->full_status_deadline)) {
+		di->full_status_override = false;
+		di->full_status_deadline = 0;
+		di->full_status_generation++;
+		changed = true;
+	}
+	mutex_unlock(&di->lock);
+	if (changed)
+		power_supply_changed(di->bat);
+}
+
+int bq27xxx_battery_set_status_override(struct power_supply *bat, bool full)
+{
+	struct bq27xxx_device_info *di;
+	bool changed;
+	unsigned long deadline;
+
+	if (!bat || bat->desc->get_property != bq27xxx_battery_get_property)
+		return -EOPNOTSUPP;
+	di = power_supply_get_drvdata(bat);
+	if (!di || di->bat != bat)
+		return -EINVAL;
+	if (!bq27xxx_samurai_instant(di))
+		return -EOPNOTSUPP;
+
+	mutex_lock(&di->lock);
+	if (di->removed || di->suspended) {
+		mutex_unlock(&di->lock);
+		return -ESHUTDOWN;
+	}
+	deadline = full ? jiffies + msecs_to_jiffies(BQ27XXX_FULL_STATUS_TTL_MS) : 0;
+	changed = bq27xxx_full_status_changed(
+		di->full_status_override, di->full_status_deadline,
+		jiffies, full);
+	if (changed) {
+		di->full_status_override = full;
+		di->full_status_generation++;
+	}
+	di->full_status_deadline = deadline;
+	if (full)
+		mod_delayed_work(system_wq, &di->full_status_work,
+				 msecs_to_jiffies(BQ27XXX_FULL_STATUS_TTL_MS));
+	else
+		cancel_delayed_work(&di->full_status_work);
+	mutex_unlock(&di->lock);
+	if (changed)
+		power_supply_changed(bat);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(bq27xxx_battery_set_status_override);
+
 static void bq27xxx_external_power_changed(struct power_supply *psy)
 {
 	struct bq27xxx_device_info *di = power_supply_get_drvdata(psy);
 
-	/* After charger plug in/out wait 0.5s for things to stabilize */
-	mod_delayed_work(system_percpu_wq, &di->work, HZ / 2);
+	/* Native instantaneous status needs no average-current settling delay.
+	 * Other chips and opt-out profiles retain the original 0.5s wait.
+	 */
+	mutex_lock(&di->lock);
+	if (!di->removed && !di->suspended)
+		mod_delayed_work(system_percpu_wq, &di->work,
+				 bq27xxx_samurai_instant(di) ? 0 : HZ / 2);
+	mutex_unlock(&di->lock);
 }
 
 int bq27xxx_battery_setup(struct bq27xxx_device_info *di)
@@ -2235,9 +2399,12 @@ int bq27xxx_battery_setup(struct bq27xxx_device_info *di)
 	int ret;
 
 	INIT_DELAYED_WORK(&di->work, bq27xxx_battery_poll);
+	INIT_DELAYED_WORK(&di->full_status_work, bq27xxx_full_status_expire);
 	ret = devm_mutex_init(di->dev, &di->lock);
 	if (ret)
 		return ret;
+	di->removed = false;
+	di->suspended = false;
 
 	di->regs       = bq27xxx_chip_data[di->chip].regs;
 	di->unseal_key = bq27xxx_chip_data[di->chip].unseal_key;
@@ -2252,6 +2419,7 @@ int bq27xxx_battery_setup(struct bq27xxx_device_info *di)
 	psy_desc->type = POWER_SUPPLY_TYPE_BATTERY;
 	psy_desc->properties = bq27xxx_chip_data[di->chip].props;
 	psy_desc->num_properties = bq27xxx_chip_data[di->chip].props_size;
+	bq27xxx_samurai_props(di, psy_desc);
 	psy_desc->get_property = bq27xxx_battery_get_property;
 	psy_desc->external_power_changed = bq27xxx_external_power_changed;
 
@@ -2280,9 +2448,16 @@ void bq27xxx_battery_teardown(struct bq27xxx_device_info *di)
 	/* Set removed to avoid bq27xxx_battery_update() re-queuing the work */
 	mutex_lock(&di->lock);
 	di->removed = true;
+	di->suspended = true;
 	mutex_unlock(&di->lock);
 
 	cancel_delayed_work_sync(&di->work);
+	cancel_delayed_work_sync(&di->full_status_work);
+	mutex_lock(&di->lock);
+	di->full_status_override = false;
+	di->full_status_deadline = 0;
+	di->full_status_generation++;
+	mutex_unlock(&di->lock);
 }
 EXPORT_SYMBOL_GPL(bq27xxx_battery_teardown);
 
@@ -2291,7 +2466,16 @@ static int bq27xxx_battery_suspend(struct device *dev)
 {
 	struct bq27xxx_device_info *di = dev_get_drvdata(dev);
 
-	cancel_delayed_work(&di->work);
+	mutex_lock(&di->lock);
+	di->suspended = true;
+	mutex_unlock(&di->lock);
+	cancel_delayed_work_sync(&di->work);
+	cancel_delayed_work_sync(&di->full_status_work);
+	mutex_lock(&di->lock);
+	di->full_status_override = false;
+	di->full_status_deadline = 0;
+	di->full_status_generation++;
+	mutex_unlock(&di->lock);
 	return 0;
 }
 
@@ -2299,7 +2483,12 @@ static int bq27xxx_battery_resume(struct device *dev)
 {
 	struct bq27xxx_device_info *di = dev_get_drvdata(dev);
 
-	schedule_delayed_work(&di->work, 0);
+	mutex_lock(&di->lock);
+	if (!di->removed) {
+		di->suspended = false;
+		schedule_delayed_work(&di->work, 0);
+	}
+	mutex_unlock(&di->lock);
 	return 0;
 }
 #endif /* CONFIG_PM_SLEEP */

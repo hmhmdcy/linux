@@ -136,3 +136,6 @@ obj-$(CONFIG_CHARGER_QCOM_SMB2)	+= qcom_smbx.o
 obj-$(CONFIG_FUEL_GAUGE_MM8013)	+= mm8013.o
 obj-$(CONFIG_MACSMC_POWER)	+= macsmc-power.o
 obj-$(CONFIG_CHARGER_MAX77759)	+= max77759_charger.o
+obj-$(CONFIG_BATTERY_SAMURAI_MP2650)		+= samurai-mp2650.o
+obj-$(CONFIG_BATTERY_SAMURAI_USB_INPUT)		+= samurai-usb-input.o
+obj-$(CONFIG_BATTERY_SAMURAI_GAUGE_PROTECTION)	+= samurai-gauge-protection.o

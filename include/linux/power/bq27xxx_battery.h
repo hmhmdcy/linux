@@ -64,16 +64,26 @@ struct bq27xxx_device_info {
 	int voltage_min_design;
 	int voltage_max_design;
 	bool removed;
+	bool suspended;
 	unsigned long last_update;
 	union power_supply_propval last_status;
 	struct delayed_work work;
+	struct delayed_work full_status_work;
 	struct power_supply *bat;
 	struct list_head list;
 	struct mutex lock;
 	u8 *regs;
+	unsigned long full_status_deadline;
+	u32 full_status_generation;
+	bool full_status_override;
 };
 
 void bq27xxx_battery_update(struct bq27xxx_device_info *di);
+/*
+ * The caller must keep the provider alive for the duration of this sleepable
+ * call. The provider may reject the request with -ESHUTDOWN while suspending.
+ */
+int bq27xxx_battery_set_status_override(struct power_supply *bat, bool full);
 int bq27xxx_battery_setup(struct bq27xxx_device_info *di);
 void bq27xxx_battery_teardown(struct bq27xxx_device_info *di);
 extern const struct dev_pm_ops bq27xxx_battery_battery_pm_ops;
