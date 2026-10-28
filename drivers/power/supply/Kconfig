@@ -1199,6 +1199,36 @@ config FUEL_GAUGE_MM8013
 	  the state of charge, temperature, cycle count, actual and design
 	  capacity, etc.
 
+config BATTERY_SAMURAI_MP2650
+	tristate "Realme RMX1931 managed MP2650 charging"
+	depends on I2C && OF && BATTERY_BQ27XXX
+	depends on ARCH_QCOM || COMPILE_TEST
+	help
+	  Board-level managed charging for the Realme X2 Pro (RMX1931,
+	  "samurai"). This drives the MP2650 charger, consumes the
+	  samurai-usb-input and samurai-gauge-protection supplies, and
+	  applies OEM charge limits and thermal bands.
+
+	  The kernel keeps control disabled by default. The optional
+	  charge-control service explicitly enables charging after the
+	  providers and inherited safety state have been verified.
+
+config BATTERY_SAMURAI_USB_INPUT
+	tristate "Realme RMX1931 read-only USB input observer"
+	depends on MFD_SPMI_PMIC && POWER_SUPPLY
+	depends on ARCH_QCOM || COMPILE_TEST
+	help
+	  Read-only PM8150B USB input and Type-C source observer for the
+	  Realme X2 Pro. It never writes PMIC, charger, USB role, or PD state.
+
+config BATTERY_SAMURAI_GAUGE_PROTECTION
+	tristate "Realme RMX1931 gauge protection observer"
+	depends on I2C && POWER_SUPPLY
+	depends on ARCH_QCOM || COMPILE_TEST
+	help
+	  Read-only bq28z610 factory protection status provider for the
+	  Realme X2 Pro. PF/OTP/NVM and protection FET writes are not exposed.
+
 config MACSMC_POWER
 	tristate "Apple SMC Battery and Power Driver"
 	depends on MFD_MACSMC
